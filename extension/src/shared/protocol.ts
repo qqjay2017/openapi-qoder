@@ -30,7 +30,7 @@ export interface GenerateOptions {
 
 // Extension → Webview
 export type ToWebview =
-  | { type: 'tokenState'; hasToken: boolean }
+  | { type: 'tokenState'; hasToken: boolean; version: string }
   | { type: 'treeLoaded'; tree: TreeNodeMsg[]; projectId: string }
   | { type: 'progress'; message: string }
   | { type: 'log'; message: string }

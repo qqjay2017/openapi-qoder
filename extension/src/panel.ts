@@ -60,11 +60,14 @@ async function handleMessage(
   panel: vscode.WebviewPanel,
   context: vscode.ExtensionContext,
 ) {
+  const out = getOutput();
+  out.appendLine(`[recv] ${msg.type} ${JSON.stringify(msg).slice(0, 200)}`);
+
   switch (msg.type) {
     case 'ready': {
       const secrets = context.secrets;
       const token = await secrets.get('tornaToken');
-      post(panel, { type: 'tokenState', hasToken: !!token });
+      post(panel, { type: 'tokenState', hasToken: !!token, version: 'build6' });
       const dir = vscode.workspace.getConfiguration('openapiQoder').get<string>('outputDir') ?? 'src/api';
       post(panel, { type: 'outputDir', dir });
       checkQodercli(panel);

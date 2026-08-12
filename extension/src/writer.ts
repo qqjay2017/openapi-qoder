@@ -171,13 +171,17 @@ export async function generateAndWrite(req: GenerateRequest): Promise<GenerateRe
 
   // Stage-2: AI polish if requested.
   if (req.options.aiPolish && writtenFiles.length > 0) {
+    if (req.signal?.aborted) throw new Error('已取消');
     req.onProgress('启动 AI 润色...');
     const filePaths = writtenFiles.map((f) => path.join(outPath, f));
     const result = await polishFiles({
       files: filePaths,
       workspaceRoot: wsFolder.uri.fsPath,
+      signal: req.signal,
       onProgress: req.onProgress,
+      onLog: req.onLog,
     });
+    if (req.signal?.aborted) throw new Error('已取消');
     req.onProgress(
       `润色完成: ${result.polished} 个文件通过` +
         (result.reverted > 0 ? `, ${result.reverted} 个回滚` : ''),

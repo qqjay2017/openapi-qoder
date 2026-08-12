@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, toRaw } from 'vue';
 import { postToExtension, onMessage } from './vscode';
 import type { TreeNodeMsg, GenerateOptions } from '../../src/shared/protocol';
 import TreeItem from './TreeItem.vue';
@@ -18,6 +18,7 @@ const generatedFiles = ref<string[]>([]);
 const outputDir = ref('src/api');
 const qodercliAvailable = ref(false);
 const logs = ref<string[]>([]);
+const extVersion = ref('');
 
 const opts = ref<GenerateOptions>({
   requestFns: true,
@@ -61,15 +62,28 @@ function generate() {
   errorMsg.value = '';
   generatedFiles.value = [];
   logs.value = [];
-  postToExtension({
-    type: 'generate',
-    selection: [...selected.value],
-    options: opts.value,
-  });
+  try {
+    const msg = {
+      type: 'generate' as const,
+      selection: [...selected.value],
+      options: JSON.parse(JSON.stringify(toRaw(opts.value))) as GenerateOptions,
+    };
+    logs.value.push(`[webview] 发送消息: selection=${msg.selection.length}, options=${JSON.stringify(msg.options)}`);
+    postToExtension(msg);
+  } catch (err) {
+    logs.value.push(`[webview] 发送失败: ${(err as Error).message}`);
+    errorMsg.value = `消息发送失败: ${(err as Error).message}`;
+    phase.value = 'tree';
+  }
 }
 
 function cancel() {
-  postToExtension({ type: 'cancel' });
+  try {
+    postToExtension({ type: 'cancel' });
+    logs.value.push('[webview] 已发送取消');
+  } catch (err) {
+    logs.value.push(`[webview] 取消发送失败: ${(err as Error).message}`);
+  }
 }
 
 function pickDir() {
@@ -84,6 +98,7 @@ onMessage((msg) => {
   switch (msg.type) {
     case 'tokenState':
       phase.value = msg.hasToken ? 'tree' : 'token';
+      if (msg.version) extVersion.value = msg.version;
       break;
     case 'treeLoaded':
       tree.value = msg.tree;
@@ -101,9 +116,14 @@ onMessage((msg) => {
       progress.value = '';
       break;
     case 'error':
-      errorMsg.value = msg.message;
       loading.value = false;
-      if (phase.value === 'generating') phase.value = 'tree';
+      if (msg.message.includes('取消')) {
+        logs.value.push('[已取消]');
+        phase.value = 'tree';
+      } else {
+        errorMsg.value = msg.message;
+        if (phase.value === 'generating') phase.value = 'tree';
+      }
       break;
     case 'outputDir':
       outputDir.value = msg.dir;
@@ -189,6 +209,9 @@ onMessage((msg) => {
       <p class="hint">详细日志也输出到「输出」面板 → OpenAPI Qoder 频道</p>
       <button class="cancel-btn" @click="cancel">取消</button>
     </section>
+
+    <div class="version-badge" v-if="extVersion">ext: {{ extVersion }}</div>
+    <div class="version-badge version-warn" v-else>⚠ 未收到扩展版本（请 Reload Window）</div>
   </div>
 </template>
 
@@ -257,4 +280,6 @@ button:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); 
   margin-top: 8px;
 }
 .cancel-btn:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
+.version-badge { position: fixed; bottom: 4px; right: 8px; font-size: 0.7em; opacity: 0.4; }
+.version-warn { opacity: 0.9; color: var(--vscode-errorForeground, #f44); }
 </style>

@@ -12,7 +12,9 @@ import { parseFile, parseHeader } from '../../src/ledger/parse.js';
 export interface PolishRequest {
   files: string[];
   workspaceRoot: string;
+  signal?: AbortSignal;
   onProgress: (msg: string) => void;
+  onLog: (msg: string) => void;
 }
 
 export interface PolishResult {
@@ -56,42 +58,86 @@ function getQodercliPath(): string {
   return vscode.workspace.getConfiguration('openapiQoder').get<string>('qodercliPath') ?? 'qodercli';
 }
 
-async function runQodercli(prompt: string, cwd: string, maxTurns: number): Promise<boolean> {
+interface RunOptions {
+  prompt: string;
+  cwd: string;
+  maxTurns: number;
+  signal?: AbortSignal;
+  onLog: (msg: string) => void;
+}
+
+async function runQodercli(opts: RunOptions): Promise<boolean> {
   return new Promise((resolve) => {
+    if (opts.signal?.aborted) { resolve(false); return; }
+
     const args = [
       '-p',
-      '--output-format', 'json',
+      '--output-format', 'stream-json',
       '--permission-mode', 'accept_edits',
       '--allowed-tools', 'Read,Edit',
-      '--max-turns', String(maxTurns),
+      '--max-turns', String(opts.maxTurns),
       '--no-session-persistence',
       '--setting-sources', '',
     ];
 
     const proc = spawn(getQodercliPath(), args, {
-      cwd,
+      cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
     });
 
-    proc.stdin.write(prompt);
+    // Kill child process when abort fires.
+    const onAbort = () => {
+      opts.onLog('[qodercli] 收到取消信号，终止进程');
+      proc.kill('SIGTERM');
+    };
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+
+    proc.stdin.write(opts.prompt);
     proc.stdin.end();
 
-    let stdout = '';
-    proc.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
-    proc.stderr.on('data', () => {});
+    let lastResult: any = null;
+    let buffer = '';
 
-    proc.on('close', (code) => {
-      if (code !== 0) { resolve(false); return; }
-      try {
-        const result = JSON.parse(stdout);
-        resolve(result.subtype === 'success');
-      } catch {
-        resolve(false);
+    proc.stdout.on('data', (chunk: Buffer) => {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const msg = JSON.parse(line);
+          if (msg.type === 'assistant') {
+            const text = (msg.message?.content?.[0]?.text ?? '').slice(0, 80);
+            if (text) opts.onLog(`[ai] ${text}`);
+          } else if (msg.type === 'tool_use') {
+            opts.onLog(`[tool] ${msg.name ?? 'unknown'} ${(msg.input?.file_path ?? msg.input?.command ?? '').slice(0, 60)}`);
+          } else if (msg.type === 'result') {
+            lastResult = msg;
+          }
+        } catch { /* non-JSON line, ignore */ }
       }
     });
 
-    proc.on('error', () => resolve(false));
+    proc.stderr.on('data', (chunk: Buffer) => {
+      const text = chunk.toString().trim();
+      if (text) opts.onLog(`[stderr] ${text.slice(0, 120)}`);
+    });
+
+    proc.on('close', (code) => {
+      opts.signal?.removeEventListener('abort', onAbort);
+      if (opts.signal?.aborted) { resolve(false); return; }
+      if (code !== 0) { opts.onLog(`[qodercli] 退出码 ${code}`); resolve(false); return; }
+      const success = lastResult?.subtype === 'success';
+      opts.onLog(`[qodercli] 完成: ${success ? '成功' : '失败'}`);
+      resolve(success);
+    });
+
+    proc.on('error', (err) => {
+      opts.signal?.removeEventListener('abort', onAbort);
+      opts.onLog(`[qodercli] 启动失败: ${err.message}`);
+      resolve(false);
+    });
   });
 }
 
@@ -105,20 +151,40 @@ export async function polishFiles(req: PolishRequest): Promise<PolishResult> {
 
   for (const file of req.files) {
     const content = fs.readFileSync(file, 'utf8');
-    if (content.includes('Stage-2')) continue;
+    if (content.includes('Stage-2')) {
+      req.onLog(`[skip] ${path.basename(file)} 已有 Stage-2 标记`);
+      continue;
+    }
     snapshots.set(file, content);
     targets.push({ file, apis: readApis(file) });
   }
 
-  if (targets.length === 0) return { polished: 0, reverted: 0 };
+  if (targets.length === 0) {
+    req.onLog('[polish] 没有需要润色的文件');
+    return { polished: 0, reverted: 0 };
+  }
 
   const apiCount = targets.reduce((sum, t) => sum + t.apis.length, 0);
   const maxTurns = Math.max(40, apiCount * 6);
 
   req.onProgress(`AI 润色 ${targets.length} 个文件 (${apiCount} 个接口, maxTurns=${maxTurns})...`);
+  req.onLog(`[polish] 文件: ${targets.map(t => path.basename(t.file)).join(', ')}`);
+  req.onLog(`[polish] 接口: ${targets.flatMap(t => t.apis.map(a => a.url)).join(', ')}`);
+
+  if (req.signal?.aborted) throw new Error('已取消');
 
   const prompt = buildPolishPrompt(targets);
-  const ok = await runQodercli(prompt, req.workspaceRoot, maxTurns);
+  req.onLog(`[polish] prompt 长度: ${prompt.length} 字符`);
+
+  const ok = await runQodercli({
+    prompt,
+    cwd: req.workspaceRoot,
+    maxTurns,
+    signal: req.signal,
+    onLog: req.onLog,
+  });
+
+  if (req.signal?.aborted) throw new Error('已取消');
 
   if (!ok) {
     req.onProgress('qodercli 运行失败，回滚全部文件');
@@ -127,6 +193,7 @@ export async function polishFiles(req: PolishRequest): Promise<PolishResult> {
   }
 
   // Type-check the polished output.
+  req.onLog('[tsc] 检查编译...');
   const allTs = fs.readdirSync(outputDir)
     .filter((f) => f.endsWith('.ts'))
     .map((f) => path.join(outputDir, f));
@@ -139,8 +206,11 @@ export async function polishFiles(req: PolishRequest): Promise<PolishResult> {
         fs.writeFileSync(file, content);
         reverted++;
         req.onProgress(`↺ 回滚 ${path.basename(file)} (编译失败)`);
+        req.onLog(`[tsc] 回滚 ${path.basename(file)}`);
       }
     }
+  } else {
+    req.onLog('[tsc] 编译通过');
   }
 
   // Mark surviving polished files with the Stage-2 banner.
@@ -184,6 +254,7 @@ export async function polishFiles(req: PolishRequest): Promise<PolishResult> {
       }
     }
     saveLedger(ledgerPath, ledger);
+    req.onLog(`[polish] 账本已更新`);
   }
 
   return { polished, reverted };
