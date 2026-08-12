@@ -1,0 +1,5 @@
+node_modules
+generated/
+*.log
+post-tool-*.json
+tsconfig.polish.json
