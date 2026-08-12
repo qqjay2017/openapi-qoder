@@ -33,6 +33,16 @@ function readApis(filePath: string): { httpMethod: string; url: string; docName:
     : [{ httpMethod: 'POST', url: '', docName: path.basename(filePath, '.ts') }];
 }
 
+// Diagnostics about unresolved imports are expected: the generated files import
+// the host project's request client and pagination type, which are outside the
+// checked file set. The gate is here to catch what the AI can break — duplicate
+// identifiers and dangling references after a rename.
+const IGNORED_DIAGNOSTICS = new Set([
+  2307, // Cannot find module
+  2792, // Cannot find module, consider moduleResolution
+  2686, // refers to a UMD global
+]);
+
 function typeCheck(files: string[], outputDir: string): { ok: boolean; brokenFiles: Set<string> } {
   const compilerOptions: ts.CompilerOptions = {
     target: ts.ScriptTarget.ES2022,
@@ -42,11 +52,13 @@ function typeCheck(files: string[], outputDir: string): { ok: boolean; brokenFil
     noEmit: true,
     skipLibCheck: true,
     baseUrl: outputDir,
-    paths: { '@/utils/request': ['./_request-stub.ts'] },
   };
 
   const program = ts.createProgram(files, compilerOptions);
-  const diagnostics = ts.getPreEmitDiagnostics(program);
+  const diagnostics = ts
+    .getPreEmitDiagnostics(program)
+    .filter((d) => !IGNORED_DIAGNOSTICS.has(d.code));
+
   const brokenFiles = new Set<string>();
   for (const d of diagnostics) {
     if (d.file) brokenFiles.add(path.basename(d.file.fileName));

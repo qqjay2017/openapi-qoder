@@ -95,6 +95,30 @@ console.log('\npagination detection');
   check('wraps in PageResult', paged.includes('export type FooPageData = PageResult<FooPageItem>;'));
   check('imports PageResult', paged.includes("import type { PageResult } from './common.js';"));
 
+  // Consumers with their own pagination type redirect the import instead of
+  // having a common.ts written next to the output.
+  const customPageResult = generateFile(
+    {
+      id: 'x',
+      docName: 'd',
+      url: '/2m/v1/foo/page',
+      httpMethod: 'POST',
+      requestParams: [],
+      responseParams: [
+        param('1', '', 'data', 'object'),
+        param('2', '1', 'totalCount', 'int'),
+        param('3', '1', 'pageObject', 'array'),
+        param('4', '3', 'vin', 'string'),
+      ],
+    },
+    { pageResultModule: '@/types/pagination' },
+  );
+  check(
+    'pageResultModule redirects the import',
+    customPageResult.includes("import type { PageResult } from '@/types/pagination';"),
+  );
+  check('pageResultModule leaves no ./common.js', !customPageResult.includes("'./common.js'"));
+
   const unpaged = gen('/2m/v1/foo/page', [
     param('1', '', 'data', 'object'),
     param('2', '1', 'pageObject', 'array'),

@@ -24,6 +24,16 @@
           "default": "src/api",
           "description": "生成文件写入工作区的相对路径"
         },
+        "openapiQoder.requestModule": {
+          "type": "string",
+          "default": "@/utils/request",
+          "description": "请求客户端的 import 路径（生成的 request.post/get 从这里导入）"
+        },
+        "openapiQoder.pageResultModule": {
+          "type": "string",
+          "default": "@/utils/request",
+          "description": "提供 PageResult<T> 分页类型的 import 路径（改成你项目里已有的分页类型所在模块）"
+        },
         "openapiQoder.qodercliPath": {
           "type": "string",
           "default": "qodercli",

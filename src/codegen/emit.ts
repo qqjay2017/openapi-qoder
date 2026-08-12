@@ -23,6 +23,12 @@ export interface TornaDetail {
 export interface GenerateOptions {
   /** Import specifier for the shared request client. */
   requestModule?: string;
+  /**
+   * Import specifier providing `PageResult<T>`. Defaults to a sibling
+   * `./common.js`, which the CLI writes next to its output; consumers with their
+   * own pagination type should point this at it instead.
+   */
+  pageResultModule?: string;
   /** Emit the request functions. Off leaves only types/enums. Default true. */
   requestFns?: boolean;
   /** Emit enum consts + types. Off degrades enum fields to their scalar. Default true. */
@@ -33,6 +39,7 @@ export interface GenerateOptions {
 
 interface ResolvedOptions {
   requestModule: string;
+  pageResultModule: string;
   requestFns: boolean;
   enums: boolean;
   options: boolean;
@@ -41,6 +48,7 @@ interface ResolvedOptions {
 function resolveOptions(o: GenerateOptions): ResolvedOptions {
   return {
     requestModule: o.requestModule ?? '@/utils/request',
+    pageResultModule: o.pageResultModule ?? './common.js',
     requestFns: o.requestFns ?? true,
     enums: o.enums ?? true,
     options: o.options ?? false,
@@ -339,7 +347,7 @@ function assemble(header: string, sections: string[], ctx: EmitCtx): string {
   });
   const imports =
     (ctx.opts.requestFns ? `import request from '${ctx.opts.requestModule}';\n` : '') +
-    (ctx.usesPageResult ? `import type { PageResult } from './common.js';\n` : '');
+    (ctx.usesPageResult ? `import type { PageResult } from '${ctx.opts.pageResultModule}';\n` : '');
   return (
     [header + imports, ...enumBlocks, ...sections]
       .filter(Boolean)

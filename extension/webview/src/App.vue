@@ -217,7 +217,7 @@ onMessage((msg) => {
 
 <style>
 :root {
-  --pad: 12px;
+  --pad: 16px;
 }
 body {
   font-family: var(--vscode-font-family, sans-serif);
@@ -225,61 +225,68 @@ body {
   background: var(--vscode-editor-background);
   margin: 0;
   padding: var(--pad);
+  font-size: 15px;
+  line-height: 1.6;
 }
-.container { max-width: 680px; }
-h2 { font-size: 1.2em; margin: 0 0 8px; }
-.hint { font-size: 0.85em; opacity: 0.6; }
+.container { max-width: 820px; }
+h2 { font-size: 1.5em; margin: 0 0 12px; }
+.hint { font-size: 0.9em; opacity: 0.65; }
 input[type="text"], input[type="password"], input:not([type]) {
   width: 100%;
   box-sizing: border-box;
-  padding: 6px 10px;
-  margin: 6px 0;
+  padding: 9px 12px;
+  margin: 8px 0;
+  font-size: 1em;
+  font-family: inherit;
   background: var(--vscode-input-background);
   color: var(--vscode-input-foreground);
   border: 1px solid var(--vscode-input-border, transparent);
-  border-radius: 3px;
+  border-radius: 4px;
 }
 button {
-  padding: 6px 14px;
-  margin: 4px 0;
+  padding: 9px 18px;
+  margin: 6px 0;
+  font-size: 1em;
+  font-family: inherit;
   cursor: pointer;
   background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
   border: none;
-  border-radius: 3px;
+  border-radius: 4px;
 }
 button:disabled { opacity: 0.5; cursor: default; }
 button:hover:not(:disabled) { background: var(--vscode-button-hoverBackground); }
-.url-bar { display: flex; gap: 8px; align-items: center; }
+input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+.url-bar { display: flex; gap: 10px; align-items: center; }
 .url-bar input { flex: 1; }
-.error { color: var(--vscode-errorForeground); margin: 8px 0; }
-.success { color: var(--vscode-terminal-ansiGreen, #4ec9b0); margin: 8px 0; }
-.tree-container { margin: 12px 0; max-height: 400px; overflow-y: auto; }
-.options-bar { display: flex; gap: 14px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid var(--vscode-widget-border, #333); }
-.options-bar label { display: flex; align-items: center; gap: 4px; font-size: 0.9em; cursor: pointer; }
+.error { color: var(--vscode-errorForeground); margin: 10px 0; font-size: 0.95em; }
+.success { color: var(--vscode-terminal-ansiGreen, #4ec9b0); margin: 10px 0; font-size: 0.95em; }
+.tree-container { margin: 14px 0; max-height: 440px; overflow-y: auto; }
+.options-bar { display: flex; gap: 18px; flex-wrap: wrap; padding: 12px 0; border-top: 1px solid var(--vscode-widget-border, #333); }
+.options-bar label { display: flex; align-items: center; gap: 6px; font-size: 0.95em; cursor: pointer; }
 .options-bar .disabled { opacity: 0.5; }
-.action-bar { display: flex; justify-content: space-between; align-items: center; padding-top: 8px; }
-.output-dir { font-size: 0.85em; opacity: 0.7; cursor: pointer; text-decoration: underline; }
-.progress-text { font-weight: 500; margin: 8px 0 4px; }
+.action-bar { display: flex; justify-content: space-between; align-items: center; padding-top: 12px; }
+.output-dir { font-size: 0.9em; opacity: 0.75; cursor: pointer; text-decoration: underline; }
+.progress-text { font-weight: 500; margin: 10px 0 6px; font-size: 1.05em; }
 .log-panel {
-  max-height: 220px;
+  max-height: 300px;
   overflow-y: auto;
   background: var(--vscode-terminal-background, #1e1e1e);
   border: 1px solid var(--vscode-widget-border, #333);
   border-radius: 4px;
-  padding: 8px;
-  margin: 8px 0;
+  padding: 10px;
+  margin: 10px 0;
   font-family: var(--vscode-editor-font-family, monospace);
-  font-size: 0.8em;
-  line-height: 1.5;
+  font-size: 0.9em;
+  line-height: 1.6;
 }
 .log-line { white-space: pre-wrap; word-break: break-all; }
 .cancel-btn {
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #ccc);
-  margin-top: 8px;
+  margin-top: 10px;
 }
 .cancel-btn:hover { background: var(--vscode-button-secondaryHoverBackground, #45494e); }
-.version-badge { position: fixed; bottom: 4px; right: 8px; font-size: 0.7em; opacity: 0.4; }
+.version-badge { position: fixed; bottom: 6px; right: 10px; font-size: 0.78em; opacity: 0.4; }
 .version-warn { opacity: 0.9; color: var(--vscode-errorForeground, #f44); }
 </style>

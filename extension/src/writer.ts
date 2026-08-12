@@ -8,7 +8,6 @@ import { TornaClient } from '../../src/torna/client.js';
 import { mapLimit, commonSlug, findFolder } from '../../src/core/index.js';
 import { loadLedger, applyEntry, pendingWork, saveLedger } from '../../src/ledger/index.js';
 import { parseHeader } from '../../src/ledger/parse.js';
-import { COMMON_TS, REQUEST_STUB_TS } from '../../src/shared/assets.js';
 import { polishFiles } from './polish';
 import type { GenerateOptions, TreeNodeMsg } from './shared/protocol';
 
@@ -64,7 +63,8 @@ export async function generateAndWrite(req: GenerateRequest): Promise<GenerateRe
   const wsFolder = vscode.workspace.workspaceFolders?.[0];
   if (!wsFolder) throw new Error('没有打开的工作区');
 
-  const outputDir = vscode.workspace.getConfiguration('openapiQoder').get<string>('outputDir') ?? 'src/api';
+  const cfg = vscode.workspace.getConfiguration('openapiQoder');
+  const outputDir = cfg.get<string>('outputDir') ?? 'src/api';
   const outPath = path.join(wsFolder.uri.fsPath, outputDir);
   const ledgerPath = path.join(wsFolder.uri.fsPath, '.openapi-qoder', 'naming.lock.json');
 
@@ -75,6 +75,8 @@ export async function generateAndWrite(req: GenerateRequest): Promise<GenerateRe
   if (groups.length === 0) throw new Error('没有选中任何接口');
 
   const emitOpts: EmitOptions = {
+    requestModule: cfg.get<string>('requestModule') ?? '@/utils/request',
+    pageResultModule: cfg.get<string>('pageResultModule') ?? '@/utils/request',
     requestFns: req.options.requestFns,
     enums: req.options.enums,
     options: req.options.options,
@@ -152,15 +154,6 @@ export async function generateAndWrite(req: GenerateRequest): Promise<GenerateRe
     edit.replace(fileUri, new vscode.Range(0, 0, 100000, 0), applied);
     writtenFiles.push(fileName);
   }
-
-  // Write infrastructure files (emit.ts generates imports that reference them).
-  const commonUri = vscode.Uri.file(path.join(outPath, 'common.ts'));
-  edit.createFile(commonUri, { overwrite: true, ignoreIfExists: false });
-  edit.replace(commonUri, new vscode.Range(0, 0, 100000, 0), COMMON_TS);
-
-  const stubUri = vscode.Uri.file(path.join(outPath, '_request-stub.ts'));
-  edit.createFile(stubUri, { overwrite: true, ignoreIfExists: false });
-  edit.replace(stubUri, new vscode.Range(0, 0, 100000, 0), REQUEST_STUB_TS);
 
   req.onProgress('写入文件...');
   const editApplied = await vscode.workspace.applyEdit(edit);

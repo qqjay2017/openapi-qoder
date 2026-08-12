@@ -74,8 +74,8 @@ const label = computed(() => {
 </template>
 
 <style scoped>
-.tree-item { line-height: 1.6; }
-.node-label { display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 0.9em; }
-.icon { font-size: 0.85em; }
-.leaf { font-family: var(--vscode-editor-font-family, monospace); font-size: 0.85em; opacity: 0.85; }
+.tree-item { line-height: 1.9; }
+.node-label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 0.98em; }
+.icon { font-size: 0.95em; }
+.leaf { font-family: var(--vscode-editor-font-family, monospace); font-size: 0.92em; opacity: 0.9; }
 </style>
