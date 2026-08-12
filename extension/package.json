@@ -1,0 +1,46 @@
+{
+  "name": "openapi-qoder-vscode",
+  "displayName": "OpenAPI Qoder",
+  "description": "从 Torna API 文档可视化选择接口并生成 TypeScript 类型/枚举/请求函数",
+  "version": "0.1.0",
+  "publisher": "qijiswap",
+  "engines": {
+    "vscode": "^1.84.0"
+  },
+  "categories": ["Other"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "openapiQoder.open",
+        "title": "openapi-qoder: 打开生成面板"
+      }
+    ],
+    "configuration": {
+      "title": "OpenAPI Qoder",
+      "properties": {
+        "openapiQoder.outputDir": {
+          "type": "string",
+          "default": "src/api",
+          "description": "生成文件写入工作区的相对路径"
+        },
+        "openapiQoder.qodercliPath": {
+          "type": "string",
+          "default": "qodercli",
+          "description": "qodercli 可执行文件路径（AI 润色需要）"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.84.0",
+    "@vscode/vsce": "^3.3.2",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3"
+  }
+}

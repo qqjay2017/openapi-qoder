@@ -5,15 +5,24 @@
 //
 // Auth: QODER_PERSONAL_ACCESS_TOKEN, or falls back to local `qodercli login`.
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve, sep } from 'node:path';
 import { polish, summarize } from './polish/index.js';
 import { ARTIFACT_ROOT, artifactDir, repoRoot, scaffold } from './paths.js';
 
 const root = repoRoot;
-const arg = process.argv[2];
+const argv = process.argv.slice(2);
+const flags = argv.filter((a) => a.startsWith('-'));
+const dryRun = flags.includes('--dry-run');
+// A typo'd flag must not be silently ignored: this command spends real AI credits.
+const unknown = flags.filter((f) => f !== '--dry-run');
+if (unknown.length) {
+  console.error(`Unknown option(s): ${unknown.join(' ')}\nUsage: tsx src/polish-run.ts <projectId | generated/<pid>> [--dry-run]`);
+  process.exit(1);
+}
+const [arg] = argv.filter((a) => !a.startsWith('-'));
 if (!arg) {
-  console.error('Usage: tsx src/polish-run.ts <projectId | generated/<pid>>');
+  console.error('Usage: tsx src/polish-run.ts <projectId | generated/<pid>> [--dry-run]');
   process.exit(1);
 }
 
@@ -66,6 +75,15 @@ writeFileSync(
 );
 
 console.log(`Stage-1: ${basename(srcDir)} (${ARTIFACT_ROOT}/)\nStage-2: ${basename(outDir)}\n`);
+
+if (dryRun) {
+  const pending = readdirSync(outDir).filter(
+    (f) => f.endsWith('.ts') && f !== 'common.ts' && !f.startsWith('_'),
+  );
+  console.log(`--dry-run: wrote ${basename(tsconfigPath)}; would polish ${pending.length} file(s):`);
+  for (const f of pending) console.log(`  ${f}`);
+  process.exit(0);
+}
 
 await polish({
   srcDir,

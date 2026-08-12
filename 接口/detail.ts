@@ -11,7 +11,7 @@ fetch("https://doc-dev.qijiswap.com/doc/view/detail?id=d2q00BNz", {
       "sec-fetch-dest": "empty",
       "sec-fetch-mode": "cors",
       "sec-fetch-site": "same-origin",
-      "token": "dJzAyzpZ:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjE3IiwiZXhwIjoxODE2MTM4ODU5LCJpYXQiOjE3ODQ2MDI4NTl9.DZoRPO0g28jfUzJepAXUdyPwMwtBoH2ncA8Uh5U4u-c",
+      "token": "<YOUR_TORNA_TOKEN>",
       "Referer": "https://doc-dev.qijiswap.com/"
     },
     "body": null,

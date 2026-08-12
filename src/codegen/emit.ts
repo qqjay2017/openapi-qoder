@@ -4,11 +4,15 @@
 import { createHash } from 'node:crypto';
 import { pascal, pascalFromUrl, singularize } from './naming.js';
 import { buildTree, type FieldNode, type RawParam } from './tree.js';
-import { collectEnums, emitEnum, type EnumDef } from './enums.js';
+import { collectEnums, emitEnum, emitEnumOptions, type EnumDef } from './enums.js';
 
 export interface TornaDetail {
   /** Torna doc id — the stable identity used to key the naming ledger. */
   id?: string;
+  /** Owning project, used to fetch the tree this doc belongs to. */
+  projectId?: string;
+  /** The docId of the folder holding this doc. */
+  parentId?: string;
   docName: string;
   url: string;
   httpMethod: string;
@@ -19,6 +23,28 @@ export interface TornaDetail {
 export interface GenerateOptions {
   /** Import specifier for the shared request client. */
   requestModule?: string;
+  /** Emit the request functions. Off leaves only types/enums. Default true. */
+  requestFns?: boolean;
+  /** Emit enum consts + types. Off degrades enum fields to their scalar. Default true. */
+  enums?: boolean;
+  /** Also emit `{ label, value }[]` arrays next to each enum. Default false. */
+  options?: boolean;
+}
+
+interface ResolvedOptions {
+  requestModule: string;
+  requestFns: boolean;
+  enums: boolean;
+  options: boolean;
+}
+
+function resolveOptions(o: GenerateOptions): ResolvedOptions {
+  return {
+    requestModule: o.requestModule ?? '@/utils/request',
+    requestFns: o.requestFns ?? true,
+    enums: o.enums ?? true,
+    options: o.options ?? false,
+  };
 }
 
 const GATEWAY = new Set(['2m', '2b', '2c']);
@@ -62,11 +88,18 @@ function scalarType(t: string): string | null {
 
 interface EmitCtx {
   blocks: string[];
-  /** interface name -> signature of the fields it was emitted from. */
-  emitted: Map<string, string>;
+  /**
+   * Every top-level name in the file. Value is the field signature for
+   * interfaces (so an identical one can be shared) and null for names that can
+   * never be shared: type aliases, request functions, enums, imports.
+   */
+  names: Map<string, string | null>;
   usesPageResult: boolean;
   enums: Map<string, EnumDef>;
   usedEnums: Set<string>;
+  /** enumId -> reserved name of its `{label,value}[]` array. */
+  optionNames: Map<string, string>;
+  opts: ResolvedOptions;
 }
 
 // Two sub-objects can mechanically derive the same interface name (`fooBar` and
@@ -78,6 +111,14 @@ function fieldsSignature(fields: FieldNode[]): string {
   );
 }
 
+/** Claim a name that can never be shared: alias, request fn, enum, import. */
+function reserveName(base: string, ctx: EmitCtx): string {
+  let name = base;
+  for (let n = 2; ctx.names.has(name); n++) name = `${base}${n}`;
+  ctx.names.set(name, null);
+  return name;
+}
+
 // Torna names array-element placeholders "-" or "", and singularize() can strip
 // a name to nothing ("List", "s"). Either way pascal() returns '' and the
 // sub-interface name would collapse onto its owner's.
@@ -87,7 +128,7 @@ function subName(ownerName: string, fieldName: string): string {
 
 function fieldType(node: FieldNode, ownerName: string, ctx: EmitCtx): string {
   // Enum-typed string fields reference the extracted enum type.
-  if (node.enumId && ctx.enums.has(node.enumId)) {
+  if (ctx.opts.enums && node.enumId && ctx.enums.has(node.enumId)) {
     const scalar = scalarType(node.type);
     if (scalar === 'string') {
       const def = ctx.enums.get(node.enumId)!;
@@ -122,14 +163,15 @@ function emitInterface(name: string, fields: FieldNode[], ctx: EmitCtx): string 
   const sig = fieldsSignature(fields);
   let finalName = name;
   for (let n = 2; ; n++) {
-    const existing = ctx.emitted.get(finalName);
+    const existing = ctx.names.get(finalName);
     if (existing === undefined) break;
+    // null means the name belongs to an alias/fn/enum and can never be shared.
     if (existing === sig) return finalName;
     finalName = `${name}${n}`;
   }
   // Reserve before recursing: nested names must derive from the final name, and
   // a self-referential tree must not loop.
-  ctx.emitted.set(finalName, sig);
+  ctx.names.set(finalName, sig);
 
   const lines: string[] = [`export interface ${finalName} {`];
   for (const f of fields) {
@@ -167,11 +209,10 @@ function requestPath(url: string): string {
 
 function emitRequestFn(
   detail: TornaDetail,
-  base: string,
+  fnName: string,
   paramName: string,
   dataName: string,
 ): string {
-  const fnName = lowerFirst(base);
   const url = requestPath(detail.url);
   const method = (detail.httpMethod || 'POST').toUpperCase();
   const doc = `/** ${sanitizeComment(detail.docName)} */`;
@@ -203,17 +244,47 @@ function shapeHash(detail: TornaDetail, reqTree: FieldNode[], respTree: FieldNod
   return createHash('sha256').update(payload).digest('hex').slice(0, 12);
 }
 
-export function generateFile(detail: TornaDetail, options: GenerateOptions = {}): string {
-  const requestModule = options.requestModule ?? '@/utils/request';
-  const base = pascalFromUrl(detail.url, detail.docName);
-  const allParams = [...(detail.requestParams ?? []), ...(detail.responseParams ?? [])];
+function createCtx(params: RawParam[], opts: ResolvedOptions): EmitCtx {
   const ctx: EmitCtx = {
     blocks: [],
-    emitted: new Map(),
+    names: new Map(),
     usesPageResult: false,
-    enums: collectEnums(allParams),
+    enums: opts.enums ? collectEnums(params) : new Map(),
     usedEnums: new Set(),
+    optionNames: new Map(),
+    opts,
   };
+  // The file imports these, so no generated type may shadow them.
+  ctx.names.set('request', null);
+  ctx.names.set('PageResult', null);
+  // Enum names come from collectEnums and are referenced by fieldType, so claim
+  // them up front. Two different enumIds can derive the same name; reserveName
+  // hands the second one a distinct one instead of emitting a duplicate.
+  for (const [enumId, def] of ctx.enums) {
+    def.typeName = reserveName(def.typeName, ctx);
+    def.constName = reserveName(def.constName, ctx);
+    if (opts.options) {
+      ctx.optionNames.set(enumId, reserveName(`${def.constName}_OPTIONS`, ctx));
+    }
+  }
+  return ctx;
+}
+
+interface ApiParts {
+  docId: string;
+  url: string;
+  shape: string;
+  /** Interfaces this API added to the shared context. */
+  blocks: string[];
+  aliases: string[];
+  requestFn: string | null;
+  /** `// METHOD /url  docName` provenance line. */
+  comment: string;
+}
+
+function emitApi(detail: TornaDetail, ctx: EmitCtx): ApiParts {
+  const base = pascalFromUrl(detail.url, detail.docName);
+  const firstBlock = ctx.blocks.length;
 
   // --- Request params -> <Base>Param ---
   const reqTree = buildTree(detail.requestParams ?? []);
@@ -222,49 +293,119 @@ export function generateFile(detail: TornaDetail, options: GenerateOptions = {})
   // --- Response data (envelope stripped) -> <Base>Data ---
   const respTree = buildTree(detail.responseParams ?? []);
   const dataNode = findDataNode(respTree);
-  let dataName = `${base}Data`;
-  const dataAliases: string[] = [];
+  const aliases: string[] = [];
+  let dataName: string;
 
   if (!dataNode) {
-    dataAliases.push(`export type ${dataName} = unknown;`);
+    dataName = reserveName(`${base}Data`, ctx);
+    aliases.push(`export type ${dataName} = unknown;`);
   } else if (dataNode.type === 'object') {
     const pageArray = detectPageArray(dataNode);
     if (pageArray) {
       const itemName = emitInterface(`${base}Item`, pageArray.children, ctx);
       ctx.usesPageResult = true;
-      dataAliases.push(`export type ${dataName} = PageResult<${itemName}>;`);
+      dataName = reserveName(`${base}Data`, ctx);
+      aliases.push(`export type ${dataName} = PageResult<${itemName}>;`);
     } else {
-      dataName = emitInterface(dataName, dataNode.children, ctx);
+      dataName = emitInterface(`${base}Data`, dataNode.children, ctx);
     }
   } else if (dataNode.type === 'array') {
     const itemName = emitInterface(`${base}Item`, dataNode.children, ctx);
-    dataAliases.push(`export type ${dataName} = ${itemName}[];`);
+    dataName = reserveName(`${base}Data`, ctx);
+    aliases.push(`export type ${dataName} = ${itemName}[];`);
   } else {
     const scalar = scalarType(dataNode.type) ?? 'unknown';
-    dataAliases.push(`export type ${dataName} = ${scalar};`);
+    dataName = reserveName(`${base}Data`, ctx);
+    aliases.push(`export type ${dataName} = ${scalar};`);
   }
 
-  // --- Enum declarations (only those actually referenced) ---
-  const enumBlocks = [...ctx.usedEnums]
-    .map((id) => ctx.enums.get(id)!)
-    .map((def) => emitEnum(def));
+  const fnName = ctx.opts.requestFns ? reserveName(lowerFirst(base), ctx) : null;
+  return {
+    docId: detail.id ?? '-',
+    url: detail.url,
+    shape: shapeHash(detail, reqTree, respTree),
+    blocks: ctx.blocks.slice(firstBlock),
+    aliases,
+    requestFn: fnName ? emitRequestFn(detail, fnName, paramName, dataName) : null,
+    comment: `// ${detail.httpMethod} ${detail.url}  ${sanitizeComment(detail.docName)}`,
+  };
+}
 
-  // --- Request function ---
-  const requestFn = emitRequestFn(detail, base, paramName, dataName);
-
-  // --- Assemble file ---
-  const header =
-    `// AUTO-GENERATED by openapi-qoder Stage-1. Do not edit by hand.\n` +
-    `// ${detail.httpMethod} ${detail.url}  ${sanitizeComment(detail.docName)}\n` +
-    `// docId: ${detail.id ?? '-'}  shape: ${shapeHash(detail, reqTree, respTree)}\n`;
+function assemble(header: string, sections: string[], ctx: EmitCtx): string {
+  const enumBlocks = [...ctx.usedEnums].flatMap((id) => {
+    const def = ctx.enums.get(id)!;
+    const optionsName = ctx.optionNames.get(id);
+    return optionsName ? [emitEnum(def), emitEnumOptions(def, optionsName)] : [emitEnum(def)];
+  });
   const imports =
-    `import request from '${requestModule}';\n` +
+    (ctx.opts.requestFns ? `import request from '${ctx.opts.requestModule}';\n` : '') +
     (ctx.usesPageResult ? `import type { PageResult } from './common.js';\n` : '');
-
   return (
-    [header + imports, ...enumBlocks, ...ctx.blocks, ...dataAliases, requestFn]
+    [header + imports, ...enumBlocks, ...sections]
       .filter(Boolean)
       .join('\n\n')
       .trimEnd() + '\n'
   );
+}
+
+export function generateFile(detail: TornaDetail, options: GenerateOptions = {}): string {
+  const opts = resolveOptions(options);
+  const ctx = createCtx([...(detail.requestParams ?? []), ...(detail.responseParams ?? [])], opts);
+  const api = emitApi(detail, ctx);
+  const header =
+    `// AUTO-GENERATED by openapi-qoder Stage-1. Do not edit by hand.\n` +
+    `${api.comment}\n` +
+    `// docId: ${api.docId}  shape: ${api.shape}\n`;
+  const sections = [...api.blocks, ...api.aliases, api.requestFn].filter(
+    (s): s is string => !!s,
+  );
+  return assemble(header, sections, ctx);
+}
+
+export interface FolderInfo {
+  /** The folder's own Torna docId — this keys the ledger entry for the file. */
+  docId: string;
+  label: string;
+}
+
+// The sibling list is part of the hash on purpose: adding or removing an API, or
+// changing a URL, shifts the numeric name suffixes. Folding it in guarantees any
+// such shift surfaces as a shape change, so the ledger discards its now-
+// misaligned name map instead of renaming the wrong declaration.
+function folderShapeHash(apis: ApiParts[]): string {
+  const payload = JSON.stringify(apis.map((a) => [a.docId, a.url, a.shape]));
+  return createHash('sha256').update(payload).digest('hex').slice(0, 12);
+}
+
+/**
+ * Emit every API of one Torna folder into a single file. One shared context
+ * means shared enums are declared once and colliding twin APIs (`/2m/x/y` and
+ * `/2b/x/y` derive the same base name) get distinct names.
+ */
+export function generateFolderFile(
+  details: TornaDetail[],
+  folder: FolderInfo,
+  options: GenerateOptions = {},
+): string {
+  // Deterministic order, independent of how Torna happens to sort the tree:
+  // this is what makes the numeric name suffixes reproducible.
+  const sorted = [...details].sort(
+    (x, y) => x.url.localeCompare(y.url) || (x.id ?? '').localeCompare(y.id ?? ''),
+  );
+  const allParams = sorted.flatMap((d) => [
+    ...(d.requestParams ?? []),
+    ...(d.responseParams ?? []),
+  ]);
+  const ctx = createCtx(allParams, resolveOptions(options));
+  const apis = sorted.map((d) => emitApi(d, ctx));
+
+  const header =
+    `// AUTO-GENERATED by openapi-qoder Stage-1. Do not edit by hand.\n` +
+    `// 目录 ${sanitizeComment(folder.label)}  (${apis.length} API(s))\n` +
+    `// docId: ${folder.docId}  shape: ${folderShapeHash(apis)}\n` +
+    `// apiShapes: ${apis.map((a) => `${a.docId}=${a.shape}`).join(' ')}\n`;
+  const sections = apis.map((a) =>
+    [a.comment, ...a.blocks, ...a.aliases, a.requestFn].filter(Boolean).join('\n\n'),
+  );
+  return assemble(header, sections, ctx);
 }

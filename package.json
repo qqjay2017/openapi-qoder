@@ -7,7 +7,7 @@
     "qgen": "tsx src/cli.ts",
     "gen": "tsx src/generate.ts",
     "polish": "tsx src/polish-run.ts",
-    "test": "tsx src/codegen-test.ts && tsx src/generate.ts && tsx src/ledger-test.ts",
+    "test": "tsx src/core-test.ts && tsx src/codegen-test.ts && tsx src/generate.ts && tsx src/ledger-test.ts",
     "check:src": "tsc -p tsconfig.json",
     "check:out": "tsc -p tsconfig.out.json",
     "check:polished": "tsc -p tsconfig.polish.json"
@@ -19,5 +19,8 @@
   },
   "dependencies": {
     "@qoder-ai/qoder-agent-sdk": "^1.0.20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
   }
 }

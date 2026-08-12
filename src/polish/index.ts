@@ -39,14 +39,21 @@ function resolveAuth() {
   return process.env[DEFAULT_ACCESS_TOKEN_ENV_VAR] ? accessTokenFromEnv() : qodercliAuth();
 }
 
-// Pull API metadata back out of the Stage-1 header comment so the agent gets
-// naming context without re-fetching Torna.
-function readMeta(file: string): { docName: string; url: string; httpMethod: string } {
-  const head = readFileSync(file, 'utf8').split('\n', 3);
-  const m = /^\/\/ (\S+) (\S+)\s+(.*)$/.exec(head[1] ?? '');
-  return m
-    ? { httpMethod: m[1]!, url: m[2]!, docName: m[3]!.trim() }
-    : { httpMethod: 'POST', url: '', docName: basename(file, '.ts') };
+// Pull API metadata back out of the Stage-1 header comments so the agent gets
+// naming context without re-fetching Torna. A merged folder file carries one
+// `// METHOD /url  name` line per API, so collect them all — giving the agent
+// only the first would make it name every type after that one API's domain.
+function readApis(file: string): { httpMethod: string; url: string; docName: string }[] {
+  const apis: { httpMethod: string; url: string; docName: string }[] = [];
+  // Each API's comment sits above its own section, so scan the whole file. The
+  // all-caps-method + /path shape does not match the other header comments.
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const m = /^\/\/ ([A-Z]+) (\/\S*)\s*(.*)$/.exec(line);
+    if (m) apis.push({ httpMethod: m[1]!, url: m[2]!, docName: m[3]!.trim() });
+  }
+  return apis.length > 0
+    ? apis
+    : [{ httpMethod: 'POST', url: '', docName: basename(file, '.ts') }];
 }
 
 function typeCheck(cfg: PolishConfig): { ok: boolean; output: string } {
@@ -102,9 +109,23 @@ async function runAgent(targets: PolishTarget[], cfg: PolishConfig): Promise<voi
   }
 }
 
-function chunk<T>(items: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+// `limit` counts APIs, not files: one merged folder file can hold 10 APIs, and
+// batching by file count would put 40 APIs against a maxTurns of 40-60 and run
+// out of turns mid-file — a partial rename gets the whole file rolled back.
+function chunkByApis(items: PolishTarget[], limit: number): PolishTarget[][] {
+  const out: PolishTarget[][] = [];
+  let batch: PolishTarget[] = [];
+  let count = 0;
+  for (const item of items) {
+    if (batch.length > 0 && count + item.apis.length > limit) {
+      out.push(batch);
+      batch = [];
+      count = 0;
+    }
+    batch.push(item);
+    count += item.apis.length;
+  }
+  if (batch.length > 0) out.push(batch);
   return out;
 }
 
@@ -149,11 +170,11 @@ export async function polish(cfg: PolishConfig): Promise<void> {
       continue; // resume: skip files polished in a previous run
     }
     snapshot.set(n, content);
-    pending.push({ file, ...readMeta(file) });
+    pending.push({ file, apis: readApis(file) });
   }
 
   const targets = pending;
-  const batches = chunk(targets, cfg.batchSize ?? 6);
+  const batches = chunkByApis(targets, cfg.batchSize ?? 6);
   console.log(
     `Polishing ${targets.length} file(s) in ${batches.length} batch(es)` +
       (alreadyDone ? ` (${alreadyDone} already done, skipped)` : '') +

@@ -13,21 +13,31 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { parseFile, type FileShape } from './parse.js';
 
+export interface LedgerFn {
+  /** Mechanical name when recorded. Replay verifies it still exists first. */
+  mechanical: string;
+  semantic: string;
+  /** Frozen: consumers import this name, so it survives a shape change. */
+  locked?: boolean;
+}
+
 export interface ApiLedgerEntry {
   url: string;
   httpMethod: string;
+  /** 'api' = one Torna doc; 'folder' = a whole Torna folder merged into one file. */
+  kind: 'api' | 'folder';
   /** Structural fingerprint at the time decisions were made. */
   shape: string;
+  /** docId -> shape, folder entries only. Lets `status` name the drifting API. */
+  apiShapes?: Record<string, string>;
   /** mechanical type name -> semantic type name */
   types: Record<string, string>;
-  /** mechanical request fn name -> semantic fn name */
-  fn?: string;
+  /** docId -> request function rename */
+  fns: Record<string, LedgerFn>;
   /** "MechanicalOwner.propKey" -> resolved TS type (scalar array inference) */
   fieldTypes: Record<string, string>;
   /** 'ai' | 'manual' — manual entries are never overwritten by the AI. */
   source: 'ai' | 'manual';
-  /** Once true, the fn name is frozen: consumers import it by name. */
-  locked?: boolean;
 }
 
 export interface Ledger {
@@ -97,23 +107,71 @@ export function harvestEntry(
     if (aa.name !== ab.name) types[aa.name] = ab.name;
   }
 
+  // One request fn per API, emitted in member order — that is what pairs a
+  // rename to its docId.
+  if (a.fnNames.length !== b.fnNames.length) return null;
+  const members = a.members.length > 0 ? a.members : [{ docId: a.docId, shape: a.shape }];
+  if (a.fnNames.length !== members.length) return null;
+
+  const fns: Record<string, LedgerFn> = {};
+  for (let i = 0; i < a.fnNames.length; i++) {
+    const mechanical = a.fnNames[i]!;
+    const semantic = b.fnNames[i]!;
+    if (mechanical !== semantic) {
+      fns[members[i]!.docId] = { mechanical, semantic, locked: true };
+    }
+  }
+
+  // Two declarations renamed to the same thing cannot compile. Stage-2's tsc gate
+  // catches it once; recording it would make every later run replay the breakage.
+  const targets = [...Object.values(types), ...Object.values(fns).map((f) => f.semantic)];
+  if (new Set(targets).size !== targets.length) return null;
+  const renamed = new Set(Object.keys(types));
+  const untouched = new Set(
+    [...a.interfaces.map((i) => i.name), ...a.aliases.map((al) => al.name)].filter(
+      (n) => !renamed.has(n),
+    ),
+  );
+  if (Object.values(types).some((t) => untouched.has(t))) return null;
+
   const entry: ApiLedgerEntry = {
     url: meta.url,
     httpMethod: meta.httpMethod,
+    kind: a.members.length > 0 ? 'folder' : 'api',
     shape: a.shape,
     types,
+    fns,
     fieldTypes,
     source: 'ai',
   };
-  if (a.fnName && b.fnName && a.fnName !== b.fnName) {
-    entry.fn = b.fnName;
-    entry.locked = true;
+  if (a.members.length > 0) {
+    entry.apiShapes = Object.fromEntries(a.members.map((m) => [m.docId, m.shape]));
   }
   return entry;
 }
 
-function replaceIdentifier(source: string, from: string, to: string): string {
-  return source.replace(new RegExp(`\\b${from}\\b`, 'g'), to);
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Rename identifiers in one pass. Going one-by-one would corrupt chains where a
+ * rename's target is another rename's source (`XParam`->`YParam`, `X2Param`->
+ * `XParam`), which merged folder files hit routinely because twin APIs produce
+ * `XParam` and `X2Param`. Word boundaries guarantee no source name matches
+ * inside another identifier, so the substitution order does not matter.
+ */
+function applyRenames(source: string, renames: [from: string, to: string][]): string {
+  if (renames.length === 0) return source;
+  let out = source;
+  const expand: [placeholder: string, to: string][] = [];
+  renames.forEach(([from, to], i) => {
+    const placeholder = `\u0000${i}\u0000`;
+    expand.push([placeholder, to]);
+    out = out.replace(new RegExp(`\\b${escapeRe(from)}\\b`, 'g'), placeholder);
+  });
+  for (const [placeholder, to] of expand) out = out.split(placeholder).join(to);
+  return out;
 }
 
 /**
@@ -127,29 +185,25 @@ export function applyEntry(stage1Source: string, entry: ApiLedgerEntry): string 
   // which are still intact before renaming happens.
   for (const [path, type] of Object.entries(entry.fieldTypes)) {
     const dot = path.lastIndexOf('.');
-    const owner = path.slice(0, dot);
-    const key = path.slice(dot + 1);
-    const ownerRe = new RegExp(
-      `(export interface ${owner} \\{[\\s\\S]*?\\n\\})`,
-      'm',
-    );
+    const owner = escapeRe(path.slice(0, dot));
+    const key = escapeRe(path.slice(dot + 1));
+    const ownerRe = new RegExp(`(export interface ${owner} \\{[\\s\\S]*?\\n\\})`, 'm');
     out = out.replace(ownerRe, (block) =>
       block.replace(
         new RegExp(`(^\\s{2}(?:["']?)${key}(?:["']?)\\??:\\s*)unknown\\[\\](;)`, 'm'),
-        `$1${type}$2`,
+        (_full, prefix: string, semi: string) => `${prefix}${type}${semi}`,
       ),
     );
   }
 
-  // Longest-first so `XPageParam` is not partially rewritten by `XPage`.
-  for (const from of Object.keys(entry.types).sort((x, y) => y.length - x.length)) {
-    out = replaceIdentifier(out, from, entry.types[from]!);
+  const renames: [string, string][] = Object.entries(entry.types);
+  const present = new Set(parseFile(stage1Source).fnNames);
+  for (const fn of Object.values(entry.fns)) {
+    // Gone means the suffix shifted or the API was removed; renaming by position
+    // would silently rename the wrong function.
+    if (present.has(fn.mechanical)) renames.push([fn.mechanical, fn.semantic]);
   }
-  if (entry.fn) {
-    const current = parseFile(stage1Source).fnName;
-    if (current) out = replaceIdentifier(out, current, entry.fn);
-  }
-  return out;
+  return applyRenames(out, renames);
 }
 
 /** Fields still unresolved after applying the ledger — the AI's actual work list. */

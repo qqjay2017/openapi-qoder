@@ -2,7 +2,8 @@
 //
 //   qgen list                       list spaces / projects
 //   qgen pick                       interactive: space -> project -> generate
-//   qgen gen <projectId>            fetch + Stage-1 + apply ledger
+//   qgen gen <projectId|docId>      fetch + Stage-1 + apply ledger
+//   qgen gen-folder <docId>         merge every API of that doc's folder into one file
 //   qgen harvest <projectId>        record Stage-2 decisions into the ledger
 //   qgen status <projectId>         show what still needs AI
 //
@@ -11,10 +12,11 @@
 import { readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { join } from 'node:path';
-import { generateFile } from './codegen/emit.js';
+import { generateFile, generateFolderFile } from './codegen/emit.js';
 import { TornaClient, configFromEnv, type ApiTreeNode } from './torna/client.js';
 import { parseHeader } from './ledger/parse.js';
 import { artifactDir, repoRoot, scaffold } from './paths.js';
+import { commonSlug, findFolder, mapLimit, slugFromUrl } from './core/index.js';
 import {
   applyEntry,
   harvestEntry,
@@ -29,33 +31,6 @@ const LEDGER_FILE = join(root, '.openapi-qoder', 'naming.lock.json');
 
 const stage1Dir = (pid: string) => artifactDir(pid);
 const finalDir = (pid: string) => artifactDir(`${pid}-polished`);
-
-async function mapLimit<T, R>(items: T[], limit: number, fn: (i: T) => Promise<R>): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  let cursor = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (cursor < items.length) {
-        const i = cursor++;
-        out[i] = await fn(items[i]!);
-      }
-    }),
-  );
-  return out;
-}
-
-function slugFromUrl(url: string, fallback: string): string {
-  const slug = url
-    .split('/')
-    .filter(Boolean)
-    .filter((s) => !['2m', '2b', '2c'].includes(s.toLowerCase()))
-    .filter((s) => !/^v\d/i.test(s))
-    .join('-')
-    .replace(/[^a-zA-Z0-9-]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-  return slug || fallback;
-}
 
 function tsFiles(dir: string): string[] {
   if (!existsSync(dir)) return [];
@@ -92,13 +67,39 @@ async function cmdPick(client: TornaClient): Promise<void> {
   }
 }
 
-async function cmdGen(client: TornaClient, pid: string, force = false): Promise<void> {
-  const tree = await client.getApiTree(pid);
-  const apis = tree.filter((n): n is ApiTreeNode & { docId: string } => n.type === 3 && !!n.docId);
+interface GenTarget {
+  docId: string;
+  label: string;
+  url: string;
+}
+
+// A projectId and a docId are both 8-char opaque ids, so the only way to tell
+// them apart is to ask. Try the project tree first; if that is not a project,
+// treat the id as a single API doc.
+async function resolveTargets(client: TornaClient, id: string): Promise<GenTarget[]> {
+  try {
+    const tree = await client.getApiTree(id);
+    const leaves = tree.filter((n): n is ApiTreeNode & { docId: string } => n.type === 3 && !!n.docId);
+    if (leaves.length > 0) {
+      console.log(`${id} is a project: ${leaves.length} API(s).`);
+      return leaves.map((n) => ({ docId: n.docId, label: n.label, url: n.url }));
+    }
+  } catch {
+    // Not a projectId — fall through to the single-doc path.
+  }
+  if (loadLedger(LEDGER_FILE).apis[id]?.kind === 'folder') {
+    throw new Error(`${id} 是一个目录，请用:  qgen gen-folder <该目录下任一接口的 docId>`);
+  }
+  console.log(`${id} is a single API doc.`);
+  return [{ docId: id, label: id, url: '' }];
+}
+
+async function cmdGen(client: TornaClient, id: string, force = false): Promise<void> {
+  const apis = await resolveTargets(client, id);
   console.log(`Fetching ${apis.length} API detail(s)...`);
 
-  const s1 = stage1Dir(pid);
-  const fin = finalDir(pid);
+  const s1 = stage1Dir(id);
+  const fin = finalDir(id);
   scaffold(s1);
   scaffold(fin);
 
@@ -144,16 +145,74 @@ async function cmdGen(client: TornaClient, pid: string, force = false): Promise<
     }
   });
 
-  console.log(`\nStage-1 -> generated/${pid}/  (${used.size} file(s))`);
-  console.log(`Stage-1.5 -> generated/${pid}-polished/  (ledger applied to ${reused} unchanged API(s))`);
+  console.log(`\nStage-1 -> generated/${id}/  (${used.size} file(s))`);
+  console.log(`Stage-1.5 -> generated/${id}-polished/  (ledger applied to ${reused} unchanged API(s))`);
   if (keptPolished) {
     console.log(
       `  kept ${keptPolished} un-harvested Stage-2 file(s) as-is.\n` +
-        `  Run \`qgen harvest ${pid}\` to record them, then \`qgen gen ${pid} --force\` to refresh.`,
+        `  Run \`qgen harvest ${id}\` to record them, then \`qgen gen ${id} --force\` to refresh.`,
     );
   }
-  console.log(`${needAi} API(s) need AI polish. Run:  npx tsx src/polish-run.ts ${pid}`);
+  console.log(`${needAi} API(s) need AI polish. Run:  npx tsx src/polish-run.ts ${id}`);
   if (failures.length) console.log(`\n${failures.length} failure(s):\n  ${failures.join('\n  ')}`);
+}
+
+async function cmdGenFolder(client: TornaClient, docId: string, force = false): Promise<void> {
+  const seed = await client.getDetail(docId);
+  if (!seed.projectId) throw new Error(`${docId} 的 detail 没有 projectId，无法定位目录`);
+  const tree = await client.getApiTree(seed.projectId);
+  const folder = findFolder(tree, docId, seed.parentId);
+  if (!folder) throw new Error(`找不到 ${docId} 所在的目录（parentId=${seed.parentId}）`);
+
+  const siblings = tree.filter((n): n is ApiTreeNode & { docId: string } =>
+    n.parentId === folder.id && n.type === 3 && !!n.docId,
+  );
+  if (siblings.length === 0) throw new Error(`目录 ${folder.label} 下没有接口`);
+  console.log(`目录 ${folder.label} (${folder.docId})：${siblings.length} 个接口`);
+
+  const details = (
+    await mapLimit(siblings, 5, async (api) => {
+      try {
+        return await client.getDetail(api.docId);
+      } catch (err) {
+        console.log(`  ! ${api.label} [${api.docId}]: ${(err as Error).message}`);
+        return null;
+      }
+    })
+  ).filter((d): d is Awaited<ReturnType<typeof client.getDetail>> => d !== null);
+  if (details.length === 0) throw new Error('所有接口详情都拉取失败');
+
+  const s1 = stage1Dir(folder.docId);
+  const fin = finalDir(folder.docId);
+  scaffold(s1);
+  scaffold(fin);
+
+  const code = generateFolderFile(details, { docId: folder.docId, label: folder.label });
+  const slug = commonSlug(details.map((d) => d.url), folder.docId);
+  writeFileSync(join(s1, `${slug}.ts`), code);
+
+  const { shape } = parseHeader(code);
+  const entry = loadLedger(LEDGER_FILE).apis[folder.docId];
+  const stale = !!entry && entry.shape !== shape;
+  const replay = stale ? { ...entry!, types: {}, fieldTypes: {} } : entry;
+  const applied = replay ? applyEntry(code, replay) : code;
+
+  const finalPath = join(fin, `${slug}.ts`);
+  const keep =
+    !force && existsSync(finalPath) && readFileSync(finalPath, 'utf8').includes('Stage-2');
+  if (!keep) writeFileSync(finalPath, applied);
+
+  console.log(`\nStage-1 -> generated/${folder.docId}/${slug}.ts  (${details.length} API(s))`);
+  if (keep) {
+    console.log(
+      `  kept the un-harvested Stage-2 file as-is.\n` +
+        `  Run \`qgen harvest ${folder.docId}\`, then \`qgen gen-folder ${docId} --force\`.`,
+    );
+  } else if (entry && !stale) {
+    console.log(`Stage-1.5 -> ledger replayed (shape unchanged)`);
+  }
+  console.log(`${pendingWork(applied).unknownArrays} unresolved unknown[].`);
+  console.log(`Polish:  npx tsx src/polish-run.ts ${folder.docId}`);
 }
 
 function cmdHarvest(pid: string): void {
@@ -189,7 +248,7 @@ function cmdHarvest(pid: string): void {
     const hasDecisions =
       Object.keys(entry.types).length > 0 ||
       Object.keys(entry.fieldTypes).length > 0 ||
-      !!entry.fn;
+      Object.keys(entry.fns).length > 0;
     if (!hasDecisions) continue;
 
     ledger.apis[docId] = { ...ledger.apis[docId], ...entry };
@@ -240,7 +299,8 @@ async function main(): Promise<void> {
       'openapi-qoder\n\n' +
         '  list                 列出空间/项目\n' +
         '  pick                 交互式选择空间→项目→生成\n' +
-        '  gen <projectId>      拉取 + Stage-1 + 复用账本\n' +
+        '  gen <projectId|docId>  拉取 + Stage-1 + 复用账本（单个接口传 docId）\n' +
+        '  gen-folder <docId>   把该接口所在目录的全部接口合并生成到一个文件\n' +
         '  harvest <projectId>  把 Stage-2 结果记入账本\n' +
         '  status <projectId>   查看待润色情况\n\n' +
         '  --force              gen 时覆盖尚未 harvest 的 Stage-2 文件',
@@ -261,6 +321,9 @@ async function main(): Promise<void> {
   else if (cmd === 'gen') {
     if (!arg) throw new Error('gen 需要 projectId');
     await cmdGen(client, arg, force);
+  } else if (cmd === 'gen-folder') {
+    if (!arg) throw new Error('gen-folder 需要该目录下任一接口的 docId');
+    await cmdGenFolder(client, arg, force);
   } else throw new Error(`未知命令: ${cmd}`);
 }
 

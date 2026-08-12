@@ -8,15 +8,18 @@
 export interface PolishTarget {
   /** File to edit, absolute path. */
   file: string;
-  /** Original API metadata, for naming context. */
-  docName: string;
-  url: string;
-  httpMethod: string;
+  /** Every API in the file, for naming context. A merged folder file has many. */
+  apis: { docName: string; url: string; httpMethod: string }[];
 }
 
 export function buildPolishPrompt(targets: PolishTarget[]): string {
   const list = targets
-    .map((t) => `- ${t.file}\n    ${t.httpMethod} ${t.url}  —  ${t.docName}`)
+    .map((t) =>
+      [
+        `- ${t.file}${t.apis.length > 1 ? `  (${t.apis.length} APIs in this one file)` : ''}`,
+        ...t.apis.map((a) => `    ${a.httpMethod} ${a.url}  —  ${a.docName}`),
+      ].join('\n'),
+    )
     .join('\n');
 
   return `You are polishing auto-generated TypeScript API files. Each file was
@@ -31,9 +34,9 @@ ${list}
    - Interfaces: \`DeptPageParam\` / \`DeptPageData\` / \`DeptPageItem\` ->
      names that reflect the business entity, keeping the
      \`...Param\` / \`...Data\` / \`...VO\` suffix convention.
-   - The exported request function: rename to a verb-led camelCase name that
-     reads like an action, e.g. \`getMerchantDeptPage\`, \`saveBatteryRecord\`,
-     \`exportVehicleList\`.
+   - The exported request functions: rename each to a verb-led camelCase name
+     that reads like an action, e.g. \`getMerchantDeptPage\`,
+     \`saveBatteryRecord\`, \`exportVehicleList\`.
    - Rename EVERY reference consistently so the file still compiles.
 
 2. **Scalar array element types.** Fields typed \`unknown[]\` had no element
@@ -46,6 +49,22 @@ ${list}
 
 3. **Comment tidying.** Fix obviously broken/duplicated JSDoc text. Keep all
    Chinese descriptions — do not translate them.
+
+## Files holding several APIs
+
+A file may contain MANY APIs, each introduced by its own
+\`// <METHOD> <url>  <name>\` comment. Such files often contain near-twin APIs
+that differ only in their gateway prefix (\`/2m/...\` vs \`/2b/...\`); Stage-1
+distinguished them with a numeric suffix (\`XParam\` and \`X2Param\`).
+
+- Every exported name in the file must stay MUTUALLY DISTINCT. Two declarations
+  renamed to the same identifier makes the file uncompilable and the result is
+  discarded.
+- Preserve the twin distinction as a real one — reflect the gateway or audience
+  in the name (e.g. \`...ForMerchant\` vs \`...ForBusiness\`) rather than leaving
+  a bare \`2\`.
+- Do NOT merge, deduplicate, remove or reorder declarations, even if two look
+  identical. Their order and count are the contract used to record your renames.
 
 ## Hard constraints — violating these makes the output useless
 

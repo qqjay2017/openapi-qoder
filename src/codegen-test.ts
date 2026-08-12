@@ -124,5 +124,56 @@ console.log('\nrequest function');
   );
 }
 
+console.log('\ngeneration switches');
+{
+  const enumParam: RawParam = {
+    id: '1',
+    parentId: '',
+    name: 'bizType',
+    type: 'string',
+    required: 1,
+    description: 'business type[Enum: PASSENGER("BIZ_P", "乘用车")<br/>, TRUCK("BIZ_T", "轻卡")<br/>]',
+    enumId: 'e1',
+    enumInfo: {
+      id: 'e1',
+      items: [
+        { name: 'PASSENGER', value: 'BIZ_P', description: '乘用车' },
+        { name: 'TRUCK', value: 'BIZ_T', description: '轻卡' },
+      ],
+    },
+  };
+  const detail: TornaDetail = {
+    id: 'd1',
+    docName: 'sw',
+    url: '/2m/v1/foo/page',
+    httpMethod: 'POST',
+    requestParams: [enumParam],
+    responseParams: [param('9', '', 'data', 'string')],
+  };
+
+  const dflt = generateFile(detail);
+  check('default emits the request fn', dflt.includes('export const fooPage ='));
+  check('default emits the enum', dflt.includes('export const BIZ_TYPE = {'));
+  check('default types the field as the enum', dflt.includes('bizType: BizType;'));
+  check('default emits no options array', !dflt.includes('_OPTIONS'));
+
+  const noFns = generateFile(detail, { requestFns: false });
+  check('requestFns:false drops the fn', !noFns.includes('export const fooPage ='));
+  check('requestFns:false drops the request import', !noFns.includes("import request from"));
+  check('requestFns:false keeps the types', noFns.includes('export interface FooPageParam {'));
+
+  const noEnums = generateFile(detail, { enums: false });
+  check('enums:false emits no enum const', !noEnums.includes('BIZ_TYPE'));
+  check('enums:false degrades the field to its scalar', noEnums.includes('bizType: string;'));
+
+  const withOptions = generateFile(detail, { options: true });
+  check('options:true emits the array', withOptions.includes('export const BIZ_TYPE_OPTIONS = ['));
+  check(
+    'options values reference the enum const',
+    withOptions.includes("{ label: '乘用车', value: BIZ_TYPE.PASSENGER },"),
+  );
+  check('options:true still emits the enum', withOptions.includes('export const BIZ_TYPE = {'));
+}
+
 console.log(failures === 0 ? '\nAll emitter checks passed.' : `\n${failures} check(s) failed.`);
 process.exitCode = failures === 0 ? 0 : 1;

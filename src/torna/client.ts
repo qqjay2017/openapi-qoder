@@ -33,11 +33,11 @@ export interface TornaConfig {
 
 export function configFromEnv(): TornaConfig {
   const baseUrl = process.env.TORNA_BASE_URL ?? 'https://doc-dev.qijiswap.com';
-  const token = process.env.TORNA_TOKEN ?? 'dJzAyzpZ:eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjE3IiwiZXhwIjoxODE2MTM4ODU5LCJpYXQiOjE3ODQ2MDI4NTl9.DZoRPO0g28jfUzJepAXUdyPwMwtBoH2ncA8Uh5U4u-c';
+  const token = process.env.TORNA_TOKEN ?? '';
   if (!token) {
     throw new Error(
-      'Missing TORNA_TOKEN env var. Set it to the Torna `token` header value ' +
-        '(see 接口/*.ts). Optionally set TORNA_BASE_URL (default doc-dev.qijiswap.com).',
+      'Missing TORNA_TOKEN env var. Set it to your Torna `token` request-header ' +
+        'value. Optionally set TORNA_BASE_URL (default doc-dev.qijiswap.com).',
     );
   }
   return { baseUrl: baseUrl.replace(/\/$/, ''), token };

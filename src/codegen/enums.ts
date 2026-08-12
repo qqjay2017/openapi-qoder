@@ -121,3 +121,18 @@ export function emitEnum(def: EnumDef): string {
   );
   return lines.join('\n');
 }
+
+/**
+ * `{ label, value }[]` for select/dropdown components. Values reference the enum
+ * const so it stays the single source of truth; members with no human label fall
+ * back to their key.
+ */
+export function emitEnumOptions(def: EnumDef, optionsName: string): string {
+  const lines: string[] = [`export const ${optionsName} = [`];
+  for (const m of def.members) {
+    const label = singleQuote(sanitizeLabel(m.label) || m.key);
+    lines.push(`  { label: ${label}, value: ${def.constName}.${m.key} },`);
+  }
+  lines.push('] as const;');
+  return lines.join('\n');
+}

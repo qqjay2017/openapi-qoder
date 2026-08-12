@@ -18,11 +18,16 @@ export interface InterfaceInfo {
 export interface FileShape {
   docId: string;
   shape: string;
+  /**
+   * APIs merged into this file, in emission order. Empty for single-API files.
+   * Order matters: it is what pairs a request fn to its docId.
+   */
+  members: { docId: string; shape: string }[];
   interfaces: InterfaceInfo[];
   /** `export type X = ...` aliases, in order. */
   aliases: { name: string; rhs: string }[];
-  /** The exported request function name, if present. */
-  fnName: string | null;
+  /** The exported request function names, in declaration order. */
+  fnNames: string[];
 }
 
 const PROP_RE = /^\s{2}(?:\/\*\*.*\*\/\s*)?(["']?)([A-Za-z0-9_$ -]+)\1(\?)?:\s*(.+?);\s*$/;
@@ -32,13 +37,28 @@ export function parseHeader(source: string): { docId: string; shape: string } {
   return m ? { docId: m[1]!, shape: m[2]! } : { docId: '-', shape: '' };
 }
 
+/**
+ * Reads the `// apiShapes: <docId>=<shape> ...` line that merged folder files
+ * carry. Order is the file's emission order.
+ */
+export function parseMembers(source: string): { docId: string; shape: string }[] {
+  const m = /^\/\/ apiShapes:\s*(.+)$/m.exec(source);
+  if (!m) return [];
+  const out: { docId: string; shape: string }[] = [];
+  for (const pair of m[1]!.trim().split(/\s+/)) {
+    const eq = pair.lastIndexOf('=');
+    if (eq > 0) out.push({ docId: pair.slice(0, eq), shape: pair.slice(eq + 1) });
+  }
+  return out;
+}
+
 export function parseFile(source: string): FileShape {
   const { docId, shape } = parseHeader(source);
   const lines = source.split('\n');
 
   const interfaces: InterfaceInfo[] = [];
   const aliases: { name: string; rhs: string }[] = [];
-  let fnName: string | null = null;
+  const fnNames: string[] = [];
 
   let current: InterfaceInfo | null = null;
   for (const line of lines) {
@@ -64,8 +84,8 @@ export function parseFile(source: string): FileShape {
     }
     // Request function: `export const name = (data: X) =>` — enums use `= {`.
     const fn = /^export const (\w+) = \(/.exec(line);
-    if (fn) fnName = fn[1]!;
+    if (fn) fnNames.push(fn[1]!);
   }
 
-  return { docId, shape, interfaces, aliases, fnName };
+  return { docId, shape, members: parseMembers(source), interfaces, aliases, fnNames };
 }
