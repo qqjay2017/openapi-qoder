@@ -84,6 +84,26 @@ async function handleMessage(
       const out = getOutput();
       out.show(true);
       out.appendLine(`\n--- 生成开始 ${new Date().toLocaleTimeString()} ---`);
+
+      // Pre-flight diagnostics — if these are empty, nothing will happen.
+      const diag = `tree=${lastTree.length} nodes, token=${lastToken ? 'set' : 'EMPTY'}, baseUrl=${lastBaseUrl || 'EMPTY'}, selected=${msg.selection.length}`;
+      out.appendLine(`[diag] ${diag}`);
+      post(panel, { type: 'log', message: `[诊断] ${diag}` });
+      post(panel, { type: 'progress', message: '正在初始化...' });
+
+      if (!lastToken) {
+        post(panel, { type: 'error', message: '未配置 Token（请先加载一次接口树）' });
+        break;
+      }
+      if (lastTree.length === 0) {
+        post(panel, { type: 'error', message: '接口树为空（请先粘贴地址并加载）' });
+        break;
+      }
+      if (msg.selection.length === 0) {
+        post(panel, { type: 'error', message: '未选中任何接口' });
+        break;
+      }
+
       try {
         const result = await generateAndWrite({
           selectedIds: msg.selection,
@@ -99,9 +119,9 @@ async function handleMessage(
         out.appendLine(`--- 完成: ${result.files.length} 个文件 ---`);
         post(panel, { type: 'done', files: result.files });
       } catch (err) {
-        const msg = (err as Error).message;
-        out.appendLine(`--- 错误: ${msg} ---`);
-        post(panel, { type: 'error', message: msg });
+        const errMsg = (err as Error).message ?? String(err);
+        out.appendLine(`--- 错误: ${errMsg} ---`);
+        post(panel, { type: 'error', message: errMsg });
       } finally {
         generateAbort = undefined;
       }
