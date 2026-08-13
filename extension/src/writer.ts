@@ -8,7 +8,7 @@ import { TornaClient } from '../../src/torna/client.js';
 import { mapLimit, commonSlug, findFolder } from '../../src/core/index.js';
 import { loadLedger, applyEntry, pendingWork, saveLedger } from '../../src/ledger/index.js';
 import { parseHeader } from '../../src/ledger/parse.js';
-import { polishFiles, type PolishRequest } from './polish';
+import { polishFiles, type PolishFileReport, type PolishRequest } from './polish';
 import type { GenerateOptions, TreeNodeMsg } from './shared/protocol';
 
 export interface GenerateRequest {
@@ -27,6 +27,7 @@ export interface GenerateRequest {
 
 export interface GenerateResult {
   files: string[];
+  polish?: PolishFileReport[];
 }
 
 interface FolderGroup {
@@ -161,10 +162,20 @@ export async function generateAndWrite(req: GenerateRequest): Promise<GenerateRe
   const editApplied = await vscode.workspace.applyEdit(edit);
   if (!editApplied) throw new Error('WorkspaceEdit 写入失败');
 
+  // applyEdit only touches in-memory buffers. They must be flushed before Stage-2,
+  // which reads and writes the files on disk: a dirty buffer would both hide the
+  // polished result and overwrite it on the next manual save.
+  const writtenPaths = new Set(writtenFiles.map((f) => path.join(outPath, f)));
+  for (const doc of vscode.workspace.textDocuments) {
+    if (!doc.isDirty || !writtenPaths.has(doc.uri.fsPath)) continue;
+    if (!(await doc.save())) req.onLog(`[warn] ${path.basename(doc.uri.fsPath)} 保存失败`);
+  }
+
   // Save ledger (in case stale entries were cleared).
   saveLedger(ledgerPath, ledger);
 
   // Stage-2: AI polish if requested.
+  let polish: PolishFileReport[] | undefined;
   if (req.options.aiPolish && writtenFiles.length > 0) {
     if (req.signal?.aborted) throw new Error('已取消');
     if (!req.cloud) throw new Error('AI 润色需要 Qoder 个人访问令牌');
@@ -179,11 +190,12 @@ export async function generateAndWrite(req: GenerateRequest): Promise<GenerateRe
       onLog: req.onLog,
     });
     if (req.signal?.aborted) throw new Error('已取消');
+    polish = result.report;
     req.onProgress(
       `润色完成: ${result.polished} 个文件通过` +
         (result.reverted > 0 ? `, ${result.reverted} 个回滚` : ''),
     );
   }
 
-  return { files: writtenFiles };
+  return { files: writtenFiles, polish };
 }

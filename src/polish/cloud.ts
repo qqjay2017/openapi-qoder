@@ -6,6 +6,7 @@
 // files. Kept free of `vscode` imports so it runs under plain node/tsx too.
 
 import { POLISH_RULES, type CloudPolishTarget } from './prompt.js';
+import { parseFile } from '../ledger/parse.js';
 
 const API_BASE = 'https://api.qoder.com/api/v1/cloud';
 const RESOURCE_NAME = 'openapi-qoder-polish';
@@ -307,4 +308,61 @@ export function parsePolishReply(
 
   if (inFence) log('[warn] 回复中有未闭合的代码块，已丢弃该文件');
   return out;
+}
+
+export interface PolishSummary {
+  /** `旧名 → 新名` pairs across interfaces, type aliases and request functions. */
+  renames: { from: string; to: string }[];
+  /** How many `unknown[]` fields got a concrete element type. */
+  unknownResolved: number;
+  /** Changed lines that are neither a rename nor an `unknown[]` fix — comments, mostly. */
+  otherLines: number;
+}
+
+// Stage-2 may not add, remove or reorder declarations, so pairing Stage-1 with the
+// polished file by declaration index is what turns a text diff into "these names
+// changed".
+export function summarizePolish(stage1: string, polished: string): PolishSummary {
+  const a = parseFile(stage1);
+  const b = parseFile(polished);
+
+  const renames: { from: string; to: string }[] = [];
+  const pair = (from: string, to: string) => {
+    if (from !== to) renames.push({ from, to });
+  };
+  a.interfaces.forEach((x, i) => pair(x.name, b.interfaces[i]?.name ?? x.name));
+  a.aliases.forEach((x, i) => pair(x.name, b.aliases[i]?.name ?? x.name));
+  a.fnNames.forEach((x, i) => pair(x, b.fnNames[i] ?? x));
+
+  const countUnknown = (s: string) => (s.match(/unknown\[\]/g) ?? []).length;
+  const unknownResolved = Math.max(0, countUnknown(stage1) - countUnknown(polished));
+
+  // Line-level churn, ignoring the lines already explained by a rename.
+  const renamedNames = new Set(renames.map((r) => r.from));
+  const beforeLines = stage1.split(/\r?\n/);
+  const afterLines = polished.split(/\r?\n/);
+  let otherLines = 0;
+  for (let i = 0; i < Math.max(beforeLines.length, afterLines.length); i++) {
+    const before = beforeLines[i] ?? '';
+    const after = afterLines[i] ?? '';
+    if (before === after) continue;
+    if ([...renamedNames].some((n) => before.includes(n))) continue;
+    if (before.includes('unknown[]')) continue;
+    otherLines++;
+  }
+
+  return { renames, unknownResolved, otherLines };
+}
+
+export function formatPolishSummary(name: string, s: PolishSummary): string {
+  const parts: string[] = [];
+  if (s.renames.length > 0) {
+    const shown = s.renames.slice(0, 3).map((r) => `${r.from}→${r.to}`).join(', ');
+    parts.push(
+      `${s.renames.length} 处重命名 (${shown}${s.renames.length > 3 ? ', ...' : ''})`,
+    );
+  }
+  if (s.unknownResolved > 0) parts.push(`${s.unknownResolved} 处 unknown[] 定型`);
+  if (s.otherLines > 0) parts.push(`${s.otherLines} 行注释/其他`);
+  return `[polish] ${name}: ${parts.length > 0 ? parts.join('，') : '无实质变化'}`;
 }

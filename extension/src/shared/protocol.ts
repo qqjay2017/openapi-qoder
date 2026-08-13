@@ -19,8 +19,20 @@ export type ToExtension =
   | { type: 'loadTree'; urlOrId: string }
   | { type: 'generate'; selection: string[]; options: GenerateOptions }
   | { type: 'pickOutputDir' }
+  | { type: 'showDiff'; file: string }
   | { type: 'cancel' }
   | { type: 'ready' };
+
+/** One polished file, as shown in the panel after a run. */
+export interface PolishReportMsg {
+  name: string;
+  /** Absolute path, echoed back in `showDiff`. */
+  file: string;
+  status: 'polished' | 'reverted' | 'failed';
+  renames: { from: string; to: string }[];
+  unknownResolved: number;
+  otherLines: number;
+}
 
 export interface GenerateOptions {
   requestFns: boolean;
@@ -35,6 +47,6 @@ export type ToWebview =
   | { type: 'treeLoaded'; tree: TreeNodeMsg[]; projectId: string }
   | { type: 'progress'; message: string }
   | { type: 'log'; message: string }
-  | { type: 'done'; files: string[] }
+  | { type: 'done'; files: string[]; polish?: PolishReportMsg[] }
   | { type: 'error'; message: string }
   | { type: 'outputDir'; dir: string };

@@ -46,6 +46,9 @@ export const POLISH_RULES = `## Your ONLY allowed changes
      that reads like an action, e.g. \`getMerchantDeptPage\`,
      \`saveBatteryRecord\`, \`exportVehicleList\`.
    - Rename EVERY reference consistently so the file still compiles.
+   - A type named \`<Something>VO\` with no API prefix is SHARED by several APIs:
+     Stage-1 collapsed identical shapes into it on purpose. Keep such a name
+     neutral — never re-prefix it with one API's name.
 
 2. **Scalar array element types.** Fields typed \`unknown[]\` had no element
    metadata in the source doc. Infer the element type from the field name,
@@ -57,6 +60,13 @@ export const POLISH_RULES = `## Your ONLY allowed changes
 
 3. **Comment tidying.** Fix obviously broken/duplicated JSDoc text. Keep all
    Chinese descriptions — do not translate them.
+
+4. **Missing type docs.** Stage-1 already put a \`/** ...入参 */\` /
+   \`/** ...出参 */\` line above most declarations. A nested interface with no
+   such line means the source doc had no description for the field it came from:
+   add a one-line Chinese JSDoc stating what that type represents, inferred from
+   its name and fields (e.g. \`/** 押金档位 */\`). Do not restate the obvious in
+   English, and do not touch a doc line that is already accurate.
 
 ## Files holding several APIs
 

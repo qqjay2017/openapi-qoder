@@ -17,6 +17,16 @@ let lastToken = '';
 let generateAbort: AbortController | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
 
+// Stage-1 sources from the last polish run, keyed by the file's fs path. The diff
+// editor's left-hand side reads them through a virtual document, so nothing extra
+// has to be written to the workspace.
+const STAGE1_SCHEME = 'openapi-qoder-stage1';
+const stage1Snapshots = new Map<string, string>();
+
+const stage1Provider: vscode.TextDocumentContentProvider = {
+  provideTextDocumentContent: (uri) => stage1Snapshots.get(uri.query) ?? '',
+};
+
 function getOutput(): vscode.OutputChannel {
   if (!outputChannel) outputChannel = vscode.window.createOutputChannel('OpenAPI Qoder');
   return outputChannel;
@@ -29,6 +39,10 @@ export function createPanel(context: vscode.ExtensionContext) {
   }
 
   const distWebview = path.join(context.extensionPath, 'dist', 'webview');
+
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(STAGE1_SCHEME, stage1Provider),
+  );
 
   currentPanel = vscode.window.createWebviewPanel(
     'openapiQoder',
@@ -138,7 +152,20 @@ async function handleMessage(
           onLog: (m) => { out.appendLine(m); post(panel, { type: 'log', message: m }); },
         });
         out.appendLine(`--- 完成: ${result.files.length} 个文件 ---`);
-        post(panel, { type: 'done', files: result.files });
+        stage1Snapshots.clear();
+        for (const r of result.polish ?? []) stage1Snapshots.set(r.file, r.stage1);
+        post(panel, {
+          type: 'done',
+          files: result.files,
+          polish: (result.polish ?? []).map((r) => ({
+            name: r.name,
+            file: r.file,
+            status: r.status,
+            renames: r.summary?.renames ?? [],
+            unknownResolved: r.summary?.unknownResolved ?? 0,
+            otherLines: r.summary?.otherLines ?? 0,
+          })),
+        });
       } catch (err) {
         const errMsg = (err as Error).message ?? String(err);
         out.appendLine(`--- 错误: ${errMsg} ---`);
@@ -153,6 +180,22 @@ async function handleMessage(
         generateAbort.abort();
         getOutput().appendLine('--- 用户取消 ---');
       }
+      break;
+    }
+    case 'showDiff': {
+      if (!stage1Snapshots.has(msg.file)) {
+        post(panel, { type: 'error', message: '没有该文件的 Stage-1 快照（请重新生成一次）' });
+        break;
+      }
+      const name = path.basename(msg.file);
+      // The path segment is only for the tab label; `query` is what the provider reads.
+      const left = vscode.Uri.parse(`${STAGE1_SCHEME}:${name}`).with({ query: msg.file });
+      await vscode.commands.executeCommand(
+        'vscode.diff',
+        left,
+        vscode.Uri.file(msg.file),
+        `${name}: Stage-1 ↔ AI 润色后`,
+      );
       break;
     }
     case 'pickOutputDir': {

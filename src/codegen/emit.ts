@@ -102,6 +102,18 @@ interface EmitCtx {
    * never be shared: type aliases, request functions, enums, imports.
    */
   names: Map<string, string | null>;
+  /**
+   * Dedup table for nested sub-interfaces: structural key -> already emitted
+   * name. Two APIs in one file routinely describe the same embedded object, and
+   * their mechanical names differ only by the owner prefix.
+   */
+  nested: Map<string, string>;
+  /**
+   * Structural keys that occur in more than one place across the file. Such a
+   * type ends up referenced by several APIs, so it must not carry the name of
+   * whichever API happened to be emitted first.
+   */
+  sharedKeys: Set<string>;
   usesPageResult: boolean;
   enums: Map<string, EnumDef>;
   usedEnums: Set<string>;
@@ -117,6 +129,50 @@ function fieldsSignature(fields: FieldNode[]): string {
   return JSON.stringify(
     fields.map((f) => [f.name, f.type, f.required ? 1 : 0, f.enumId, fieldsSignature(f.children)]),
   );
+}
+
+// The dedup key for nested types includes field comments, not just structure:
+// merging two twins keeps the first one's body, so an identically shaped but
+// better documented twin must not be silently discarded. Where each twin was
+// used stays visible in the owning field's own comment.
+function nestedKey(fields: FieldNode[]): string {
+  return JSON.stringify(
+    fields.map((f) => [
+      f.name,
+      f.type,
+      f.required ? 1 : 0,
+      f.enumId,
+      f.description ?? '',
+      nestedKey(f.children),
+    ]),
+  );
+}
+
+// Whether a shape is shared has to be known BEFORE the first declaration is
+// named, so every API's tree is scanned up front. Deciding this at emission time
+// is not possible: the first owner would already have stamped its prefix on the
+// name, and Stage-2 is not guaranteed to run.
+//
+// Counting is per API, not per occurrence: twin fields inside ONE API still get
+// that API's chained name, which stays traceable in a file holding 20 of them.
+// Only a shape reached from several APIs must shed its owner's prefix.
+function collectSharedKeys(groups: RawParam[][]): Set<string> {
+  const owners = new Map<string, Set<number>>();
+  groups.forEach((params, api) => {
+    const visit = (nodes: FieldNode[]): void => {
+      for (const n of nodes) {
+        if (n.children.length > 0 && (n.type === 'object' || n.type === 'array')) {
+          const key = nestedKey(n.children);
+          const seen = owners.get(key);
+          if (seen) seen.add(api);
+          else owners.set(key, new Set([api]));
+        }
+        visit(n.children);
+      }
+    };
+    visit(buildTree(params));
+  });
+  return new Set([...owners].filter(([, apis]) => apis.size > 1).map(([key]) => key));
 }
 
 /** Claim a name that can never be shared: alias, request fn, enum, import. */
@@ -149,13 +205,20 @@ function fieldType(node: FieldNode, ownerName: string, ctx: EmitCtx): string {
   if (scalar) return scalar;
 
   if (node.type === 'object') {
-    return emitInterface(subName(ownerName, node.name), node.children, ctx);
+    return emitInterface(subName(ownerName, node.name), node.children, ctx, {
+      doc: node.description,
+      neutral: `${pascal(node.name) || 'Item'}VO`,
+    });
   }
 
   if (node.type === 'array') {
     // Array of objects: children describe the item's fields.
     if (node.children.length > 0) {
-      const sub = emitInterface(subName(ownerName, singularize(node.name)), node.children, ctx);
+      const singular = singularize(node.name);
+      const sub = emitInterface(subName(ownerName, singular), node.children, ctx, {
+        doc: node.description ? `${node.description}（列表项）` : undefined,
+        neutral: `${pascal(singular) || 'Item'}VO`,
+      });
       return `${sub}[]`;
     }
     // Scalar array with no element metadata in Torna. Left honest; Stage-2
@@ -167,21 +230,48 @@ function fieldType(node: FieldNode, ownerName: string, ctx: EmitCtx): string {
 }
 
 /** Emits the interface if needed; returns the name actually used. */
-function emitInterface(name: string, fields: FieldNode[], ctx: EmitCtx): string {
+function emitInterface(
+  name: string,
+  fields: FieldNode[],
+  ctx: EmitCtx,
+  opts: {
+    /** One-line JSDoc stating what the type is for. */
+    doc?: string;
+    /**
+     * Name to use instead of `name` when this shape turns out to be shared.
+     * Only nested sub-interfaces pass it; top-level Param/Data/Item must keep
+     * their per-API names.
+     */
+    neutral?: string;
+  } = {},
+): string {
+  // Empty field sets are excluded: every `{}` would key alike, collapsing types
+  // that merely happen to carry no documented fields.
+  const canShare = !!opts.neutral && fields.length > 0;
+  const key = canShare ? nestedKey(fields) : '';
+  if (canShare) {
+    const twin = ctx.nested.get(key);
+    if (twin) return twin;
+  }
+
+  const base = canShare && ctx.sharedKeys.has(key) ? opts.neutral! : name;
   const sig = fieldsSignature(fields);
-  let finalName = name;
+  let finalName = base;
   for (let n = 2; ; n++) {
     const existing = ctx.names.get(finalName);
     if (existing === undefined) break;
     // null means the name belongs to an alias/fn/enum and can never be shared.
     if (existing === sig) return finalName;
-    finalName = `${name}${n}`;
+    finalName = `${base}${n}`;
   }
   // Reserve before recursing: nested names must derive from the final name, and
   // a self-referential tree must not loop.
   ctx.names.set(finalName, sig);
+  if (canShare) ctx.nested.set(key, finalName);
 
-  const lines: string[] = [`export interface ${finalName} {`];
+  const lines: string[] = [];
+  if (opts.doc) lines.push(`/** ${sanitizeComment(opts.doc)} */`);
+  lines.push(`export interface ${finalName} {`);
   for (const f of fields) {
     const t = fieldType(f, finalName, ctx);
     if (f.description) lines.push(`  /** ${sanitizeComment(f.description)} */`);
@@ -252,10 +342,16 @@ function shapeHash(detail: TornaDetail, reqTree: FieldNode[], respTree: FieldNod
   return createHash('sha256').update(payload).digest('hex').slice(0, 12);
 }
 
-function createCtx(params: RawParam[], opts: ResolvedOptions): EmitCtx {
+function createCtx(
+  params: RawParam[],
+  groups: RawParam[][],
+  opts: ResolvedOptions,
+): EmitCtx {
   const ctx: EmitCtx = {
     blocks: [],
     names: new Map(),
+    nested: new Map(),
+    sharedKeys: collectSharedKeys(groups),
     usesPageResult: false,
     enums: opts.enums ? collectEnums(params) : new Map(),
     usedEnums: new Set(),
@@ -294,9 +390,16 @@ function emitApi(detail: TornaDetail, ctx: EmitCtx): ApiParts {
   const base = pascalFromUrl(detail.url, detail.docName);
   const firstBlock = ctx.blocks.length;
 
+  // Every top-level type states its role relative to the API, so a reader does
+  // not have to trace back to the request function to know what it is for.
+  const what = sanitizeComment(detail.docName);
+  const paramDoc = `${what}入参`;
+  const dataDoc = `${what}出参`;
+  const itemDoc = `${what}出参列表项`;
+
   // --- Request params -> <Base>Param ---
   const reqTree = buildTree(detail.requestParams ?? []);
-  const paramName = emitInterface(`${base}Param`, reqTree, ctx);
+  const paramName = emitInterface(`${base}Param`, reqTree, ctx, { doc: paramDoc });
 
   // --- Response data (envelope stripped) -> <Base>Data ---
   const respTree = buildTree(detail.responseParams ?? []);
@@ -306,25 +409,25 @@ function emitApi(detail: TornaDetail, ctx: EmitCtx): ApiParts {
 
   if (!dataNode) {
     dataName = reserveName(`${base}Data`, ctx);
-    aliases.push(`export type ${dataName} = unknown;`);
+    aliases.push(`/** ${dataDoc} */\nexport type ${dataName} = unknown;`);
   } else if (dataNode.type === 'object') {
     const pageArray = detectPageArray(dataNode);
     if (pageArray) {
-      const itemName = emitInterface(`${base}Item`, pageArray.children, ctx);
+      const itemName = emitInterface(`${base}Item`, pageArray.children, ctx, { doc: itemDoc });
       ctx.usesPageResult = true;
       dataName = reserveName(`${base}Data`, ctx);
-      aliases.push(`export type ${dataName} = PageResult<${itemName}>;`);
+      aliases.push(`/** ${dataDoc} */\nexport type ${dataName} = PageResult<${itemName}>;`);
     } else {
-      dataName = emitInterface(`${base}Data`, dataNode.children, ctx);
+      dataName = emitInterface(`${base}Data`, dataNode.children, ctx, { doc: dataDoc });
     }
   } else if (dataNode.type === 'array') {
-    const itemName = emitInterface(`${base}Item`, dataNode.children, ctx);
+    const itemName = emitInterface(`${base}Item`, dataNode.children, ctx, { doc: itemDoc });
     dataName = reserveName(`${base}Data`, ctx);
-    aliases.push(`export type ${dataName} = ${itemName}[];`);
+    aliases.push(`/** ${dataDoc} */\nexport type ${dataName} = ${itemName}[];`);
   } else {
     const scalar = scalarType(dataNode.type) ?? 'unknown';
     dataName = reserveName(`${base}Data`, ctx);
-    aliases.push(`export type ${dataName} = ${scalar};`);
+    aliases.push(`/** ${dataDoc} */\nexport type ${dataName} = ${scalar};`);
   }
 
   const fnName = ctx.opts.requestFns ? reserveName(lowerFirst(base), ctx) : null;
@@ -358,7 +461,9 @@ function assemble(header: string, sections: string[], ctx: EmitCtx): string {
 
 export function generateFile(detail: TornaDetail, options: GenerateOptions = {}): string {
   const opts = resolveOptions(options);
-  const ctx = createCtx([...(detail.requestParams ?? []), ...(detail.responseParams ?? [])], opts);
+  const all = [...(detail.requestParams ?? []), ...(detail.responseParams ?? [])];
+  // A single API is its own only owner, so no shape can be cross-API shared.
+  const ctx = createCtx(all, [all], opts);
   const api = emitApi(detail, ctx);
   const header =
     `// AUTO-GENERATED by openapi-qoder Stage-1. Do not edit by hand.\n` +
@@ -400,11 +505,12 @@ export function generateFolderFile(
   const sorted = [...details].sort(
     (x, y) => x.url.localeCompare(y.url) || (x.id ?? '').localeCompare(y.id ?? ''),
   );
-  const allParams = sorted.flatMap((d) => [
+  const groups = sorted.map((d) => [
     ...(d.requestParams ?? []),
     ...(d.responseParams ?? []),
   ]);
-  const ctx = createCtx(allParams, resolveOptions(options));
+  const allParams = groups.flat();
+  const ctx = createCtx(allParams, groups, resolveOptions(options));
   const apis = sorted.map((d) => emitApi(d, ctx));
 
   const header =

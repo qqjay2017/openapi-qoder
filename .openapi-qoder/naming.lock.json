@@ -1,4 +1,67 @@
 {
   "version": 1,
-  "apis": {}
+  "apis": {
+    "a85ywLg8": {
+      "url": "信审订单产品控制器",
+      "httpMethod": "目录",
+      "kind": "folder",
+      "shape": "72b3f141e8aa",
+      "types": {
+        "HedListParam": "HedBatteryQueryParam",
+        "HedListDataBundleDepositStep": "HedBatteryBundleDepositStepVO",
+        "HedListDataBundle": "HedBatteryBundleVO",
+        "HedListData": "HedBatteryBundleData",
+        "HedListItem": "HedBatteryProductVO",
+        "BatteryProductListParam": "ElecServiceBatteryProductParam",
+        "BatteryProductListItemCarModelDTO": "ElecServiceBatteryProductCarModelVO",
+        "BatteryProductListItem": "ElecServiceBatteryProductVO",
+        "OrderProductListParam": "CreditOrderProductParam",
+        "OrderProductListItemBundleDepositStep": "CreditOrderProductBundleDepositStepVO",
+        "OrderProductListItemBundle": "CreditOrderProductBundleVO",
+        "OrderProductListItem": "CreditOrderProductVO"
+      },
+      "fns": {
+        "YX0l9jGX": {
+          "mechanical": "hedList",
+          "semantic": "getHedBatteryBundleList",
+          "locked": true
+        },
+        "58pnGWWz": {
+          "mechanical": "hedList2",
+          "semantic": "getHedBatteryProductList",
+          "locked": true
+        },
+        "V2JVA4Y2": {
+          "mechanical": "batteryProductList",
+          "semantic": "getElecServiceBatteryProductList",
+          "locked": true
+        },
+        "e24QpmL8": {
+          "mechanical": "creditHistoryCoopInfo",
+          "semantic": "getCreditHistoryCoopInfo",
+          "locked": true
+        },
+        "VXE7ApE2": {
+          "mechanical": "creditHistoryCoopInfoByCreditId",
+          "semantic": "getCreditHistoryCoopInfoByCreditId",
+          "locked": true
+        },
+        "42GQ6JXW": {
+          "mechanical": "orderProductList",
+          "semantic": "getCreditOrderProductList",
+          "locked": true
+        }
+      },
+      "fieldTypes": {},
+      "source": "ai",
+      "apiShapes": {
+        "YX0l9jGX": "3eebce6047d9",
+        "58pnGWWz": "fc20857f95ba",
+        "V2JVA4Y2": "f951f7836d5e",
+        "e24QpmL8": "aec406e2836d",
+        "VXE7ApE2": "b0c5db823b48",
+        "42GQ6JXW": "84a82f87c08f"
+      }
+    }
+  }
 }

@@ -10,9 +10,12 @@ import {
 } from '../../src/polish/prompt.js';
 import {
   ensureCloudIds,
+  formatPolishSummary,
   parsePolishReply,
   runCloudTurn,
+  summarizePolish,
   type CloudIdStore,
+  type PolishSummary,
 } from '../../src/polish/cloud.js';
 import { harvestEntry, loadLedger, saveLedger } from '../../src/ledger/index.js';
 import { parseHeader } from '../../src/ledger/parse.js';
@@ -30,9 +33,19 @@ export interface PolishRequest {
   onLog: (msg: string) => void;
 }
 
+export interface PolishFileReport {
+  name: string;
+  file: string;
+  status: 'polished' | 'reverted' | 'failed';
+  /** Stage-1 source, kept so the panel can diff it against what is on disk. */
+  stage1: string;
+  summary?: PolishSummary;
+}
+
 export interface PolishResult {
   polished: number;
   reverted: number;
+  report: PolishFileReport[];
 }
 
 function readApis(filePath: string): { httpMethod: string; url: string; docName: string }[] {
@@ -117,7 +130,7 @@ export async function polishFiles(req: PolishRequest): Promise<PolishResult> {
 
   if (targets.length === 0) {
     req.onLog('[polish] 没有需要润色的文件');
-    return { polished: 0, reverted: 0 };
+    return { polished: 0, reverted: 0, report: [] };
   }
 
   if (req.signal?.aborted) throw new Error('已取消');
@@ -128,7 +141,7 @@ export async function polishFiles(req: PolishRequest): Promise<PolishResult> {
 
   req.onProgress(`AI 润色 ${targets.length} 个文件 (${apiCount} 个接口, ${batches.length} 批)...`);
 
-  const polishedNames = new Set<string>();
+  const report: PolishFileReport[] = [];
   let reverted = 0;
 
   for (const [i, batch] of batches.entries()) {
@@ -155,6 +168,9 @@ export async function polishFiles(req: PolishRequest): Promise<PolishResult> {
       // on, so one bad batch does not cost the whole run.
       req.onProgress(`${label} 失败，保留 Stage-1`);
       req.onLog(`[error] ${label}: ${(err as Error).message}`);
+      for (const t of batch) {
+        report.push({ name: t.name, file: t.file, status: 'failed', stage1: t.content });
+      }
       continue;
     }
 
@@ -163,6 +179,7 @@ export async function polishFiles(req: PolishRequest): Promise<PolishResult> {
       const next = replies.get(t.name);
       if (next === undefined) {
         req.onLog(`[warn] ${t.name} 未在回复中出现，保持 Stage-1`);
+        report.push({ name: t.name, file: t.file, status: 'failed', stage1: t.content });
         continue;
       }
       const withEol = matchEol(next, t.content);
@@ -186,26 +203,30 @@ export async function polishFiles(req: PolishRequest): Promise<PolishResult> {
         reverted++;
         req.onProgress(`↺ 回滚 ${t.name} (编译失败)`);
         req.onLog(`[tsc] 回滚 ${t.name}`);
+        report.push({ name: t.name, file: t.file, status: 'reverted', stage1: t.content });
       } else {
         markStage2(t.file);
-        polishedNames.add(t.name);
+        const summary = summarizePolish(t.content, fs.readFileSync(t.file, 'utf8'));
+        req.onLog(formatPolishSummary(t.name, summary));
+        report.push({ name: t.name, file: t.file, status: 'polished', stage1: t.content, summary });
       }
     }
   }
 
+  const polishedFiles = report.filter((r) => r.status === 'polished');
+
   // Harvest naming decisions into the ledger so re-generation replays them.
-  if (polishedNames.size > 0) {
+  if (polishedFiles.length > 0) {
     req.onProgress('记录命名决策到账本...');
     const ledger = loadLedger(ledgerPath);
-    for (const t of targets) {
-      if (!polishedNames.has(t.name)) continue;
-      const after = fs.readFileSync(t.file, 'utf8');
-      const { docId } = parseHeader(t.content);
+    for (const entryFile of polishedFiles) {
+      const after = fs.readFileSync(entryFile.file, 'utf8');
+      const { docId } = parseHeader(entryFile.stage1);
       if (docId === '-') continue;
       if (ledger.apis[docId]?.source === 'manual') continue;
 
-      const meta = /^\/\/ (\S+) (\S+)/m.exec(t.content.split('\n')[1] ?? '');
-      const entry = harvestEntry(t.content, after, {
+      const meta = /^\/\/ (\S+) (\S+)/m.exec(entryFile.stage1.split('\n')[1] ?? '');
+      const entry = harvestEntry(entryFile.stage1, after, {
         httpMethod: meta?.[1] ?? 'POST',
         url: meta?.[2] ?? '',
       });
@@ -221,5 +242,5 @@ export async function polishFiles(req: PolishRequest): Promise<PolishResult> {
     req.onLog('[polish] 账本已更新');
   }
 
-  return { polished: polishedNames.size, reverted };
+  return { polished: polishedFiles.length, reverted, report };
 }

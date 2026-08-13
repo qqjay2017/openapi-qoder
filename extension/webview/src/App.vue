@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, toRaw } from 'vue';
 import { postToExtension, onMessage } from './vscode';
-import type { TreeNodeMsg, GenerateOptions } from '../../src/shared/protocol';
+import type { TreeNodeMsg, GenerateOptions, PolishReportMsg } from '../../src/shared/protocol';
 import TreeItem from './TreeItem.vue';
 
 type Phase = 'token' | 'tree' | 'generating';
@@ -15,6 +15,7 @@ const loading = ref(false);
 const progress = ref('');
 const errorMsg = ref('');
 const generatedFiles = ref<string[]>([]);
+const polishReport = ref<PolishReportMsg[]>([]);
 const outputDir = ref('src/api');
 const hasPat = ref(false);
 const patInput = ref('');
@@ -70,6 +71,7 @@ function generate() {
   progress.value = '准备中...';
   errorMsg.value = '';
   generatedFiles.value = [];
+  polishReport.value = [];
   logs.value = [];
   try {
     const msg = {
@@ -99,6 +101,10 @@ function pickDir() {
   postToExtension({ type: 'pickOutputDir' });
 }
 
+function showDiff(file: string) {
+  postToExtension({ type: 'showDiff', file });
+}
+
 onMounted(() => {
   postToExtension({ type: 'ready' });
 });
@@ -122,6 +128,7 @@ onMessage((msg) => {
       break;
     case 'done':
       generatedFiles.value = msg.files;
+      polishReport.value = msg.polish ?? [];
       phase.value = 'tree';
       progress.value = '';
       break;
@@ -173,6 +180,28 @@ onMessage((msg) => {
       <div v-if="errorMsg" class="error">{{ errorMsg }}</div>
       <div v-if="generatedFiles.length" class="success">
         已生成 {{ generatedFiles.length }} 个文件到 {{ outputDir }}/
+      </div>
+
+      <div v-if="polishReport.length" class="polish-report">
+        <div class="polish-title">AI 润色结果（点文件名看对比）</div>
+        <div v-for="r in polishReport" :key="r.file" class="polish-row">
+          <span class="polish-status" :class="r.status">
+            {{ r.status === 'polished' ? '✓' : r.status === 'reverted' ? '↺' : '✗' }}
+          </span>
+          <span class="polish-file" @click="showDiff(r.file)">{{ r.name }}</span>
+          <span v-if="r.status === 'polished'" class="polish-detail">
+            <template v-if="r.renames.length">
+              {{ r.renames.length }} 处重命名：{{ r.renames.slice(0, 3).map(x => x.from + '→' + x.to).join('、') }}{{ r.renames.length > 3 ? ' …' : '' }}
+            </template>
+            <template v-if="r.unknownResolved">，{{ r.unknownResolved }} 处 unknown[] 定型</template>
+            <template v-if="r.otherLines">，{{ r.otherLines }} 行注释/其他</template>
+            <template v-if="!r.renames.length && !r.unknownResolved && !r.otherLines">无实质变化</template>
+          </span>
+          <span v-else-if="r.status === 'reverted'" class="polish-detail">
+            编译失败，已回滚为 Stage-1
+          </span>
+          <span v-else class="polish-detail">润色未完成，保留 Stage-1</span>
+        </div>
       </div>
 
       <div v-if="tree.length" class="tree-container">
@@ -292,6 +321,20 @@ input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
 .options-bar .disabled { opacity: 0.5; }
 .pat-toggle { cursor: pointer; text-decoration: underline; }
 .pat-panel { padding: 10px 0; }
+.polish-report {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--vscode-widget-border, #333);
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+.polish-title { font-weight: 500; margin-bottom: 6px; }
+.polish-row { display: flex; gap: 8px; align-items: baseline; padding: 2px 0; }
+.polish-status.polished { color: var(--vscode-terminal-ansiGreen, #4ec9b0); }
+.polish-status.reverted { color: var(--vscode-terminal-ansiYellow, #d7ba7d); }
+.polish-status.failed { color: var(--vscode-errorForeground, #f44); }
+.polish-file { cursor: pointer; text-decoration: underline; white-space: nowrap; }
+.polish-detail { opacity: 0.7; word-break: break-all; }
 .action-bar { display: flex; justify-content: space-between; align-items: center; padding-top: 12px; }
 .output-dir { font-size: 0.9em; opacity: 0.75; cursor: pointer; text-decoration: underline; }
 .progress-text { font-weight: 500; margin: 10px 0 6px; font-size: 1.05em; }
