@@ -16,7 +16,12 @@ export interface TornaDetail {
   docName: string;
   url: string;
   httpMethod: string;
+  /**
+   * Body params. Torna keeps GET query params in `queryParams` instead, so both
+   * have to be read — reading only this one leaves every GET's Param empty.
+   */
   requestParams: RawParam[];
+  queryParams?: RawParam[];
   responseParams: RawParam[];
 }
 
@@ -328,6 +333,13 @@ function emitRequestFn(
   );
 }
 
+// Everything the caller has to supply. Torna splits these across two arrays by
+// transport (GET query vs body), but the generated Param interface is a single
+// object either way, and ids are unique per doc so the trees merge cleanly.
+function inputParams(detail: TornaDetail): RawParam[] {
+  return [...(detail.queryParams ?? []), ...(detail.requestParams ?? [])];
+}
+
 // Structural fingerprint of the API shape. Drives incremental polishing:
 // unchanged hash => reuse ledger names and skip the AI entirely.
 function shapeHash(detail: TornaDetail, reqTree: FieldNode[], respTree: FieldNode[]): string {
@@ -397,8 +409,8 @@ function emitApi(detail: TornaDetail, ctx: EmitCtx): ApiParts {
   const dataDoc = `${what}出参`;
   const itemDoc = `${what}出参列表项`;
 
-  // --- Request params -> <Base>Param ---
-  const reqTree = buildTree(detail.requestParams ?? []);
+  // --- Request params (body + GET query) -> <Base>Param ---
+  const reqTree = buildTree(inputParams(detail));
   const paramName = emitInterface(`${base}Param`, reqTree, ctx, { doc: paramDoc });
 
   // --- Response data (envelope stripped) -> <Base>Data ---
@@ -461,7 +473,7 @@ function assemble(header: string, sections: string[], ctx: EmitCtx): string {
 
 export function generateFile(detail: TornaDetail, options: GenerateOptions = {}): string {
   const opts = resolveOptions(options);
-  const all = [...(detail.requestParams ?? []), ...(detail.responseParams ?? [])];
+  const all = [...inputParams(detail), ...(detail.responseParams ?? [])];
   // A single API is its own only owner, so no shape can be cross-API shared.
   const ctx = createCtx(all, [all], opts);
   const api = emitApi(detail, ctx);
@@ -505,10 +517,7 @@ export function generateFolderFile(
   const sorted = [...details].sort(
     (x, y) => x.url.localeCompare(y.url) || (x.id ?? '').localeCompare(y.id ?? ''),
   );
-  const groups = sorted.map((d) => [
-    ...(d.requestParams ?? []),
-    ...(d.responseParams ?? []),
-  ]);
+  const groups = sorted.map((d) => [...inputParams(d), ...(d.responseParams ?? [])]);
   const allParams = groups.flat();
   const ctx = createCtx(allParams, groups, resolveOptions(options));
   const apis = sorted.map((d) => emitApi(d, ctx));

@@ -199,5 +199,30 @@ console.log('\ngeneration switches');
   check('options:true still emits the enum', withOptions.includes('export const BIZ_TYPE = {'));
 }
 
+console.log('\nGET query params');
+{
+  // Torna files GET inputs under `queryParams`, not `requestParams`. Reading only
+  // the latter emitted an empty Param interface for every GET endpoint.
+  const detail: TornaDetail = {
+    id: 'doc1',
+    docName: '查询历史合作信息',
+    url: '/api/v1/credit/historyCoopInfoByCreditId',
+    httpMethod: 'GET',
+    queryParams: [param('q1', '', 'creditId', 'string')],
+    requestParams: [],
+    responseParams: [param('1', '', 'data', 'object'), param('2', '1', 'name', 'string')],
+  };
+  const code = generateFile(detail);
+  check('query param lands in the Param interface', /creditId: string;/.test(code));
+  check('Param interface is not empty', !/Param \{\n\}/.test(code));
+
+  // Both transports feed one Param object.
+  const merged = generateFile({
+    ...detail,
+    requestParams: [param('b1', '', 'pageIndex', 'int32')],
+  });
+  check('query and body params merge', /creditId: string;/.test(merged) && /pageIndex: number;/.test(merged));
+}
+
 console.log(failures === 0 ? '\nAll emitter checks passed.' : `\n${failures} check(s) failed.`);
 process.exitCode = failures === 0 ? 0 : 1;

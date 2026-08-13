@@ -5,62 +5,28 @@
       "url": "信审订单产品控制器",
       "httpMethod": "目录",
       "kind": "folder",
-      "shape": "72b3f141e8aa",
+      "shape": "0f1bfb27f095",
       "types": {
-        "HedListParam": "HedBatteryQueryParam",
-        "HedListDataBundleDepositStep": "HedBatteryBundleDepositStepVO",
-        "HedListDataBundle": "HedBatteryBundleVO",
-        "HedListData": "HedBatteryBundleData",
-        "HedListItem": "HedBatteryProductVO",
-        "BatteryProductListParam": "ElecServiceBatteryProductParam",
+        "HedListParam": "HedBatteryBundleListParam",
+        "HedListData": "HedBatteryBundleListData",
+        "HedListParam2": "HedBatteryProductListParam",
+        "HedListItem": "HedBatteryProductListItem",
+        "BatteryProductListParam": "ElecServiceBatteryProductListParam",
         "BatteryProductListItemCarModelDTO": "ElecServiceBatteryProductCarModelVO",
-        "BatteryProductListItem": "ElecServiceBatteryProductVO",
-        "OrderProductListParam": "CreditOrderProductParam",
-        "OrderProductListItemBundleDepositStep": "CreditOrderProductBundleDepositStepVO",
-        "OrderProductListItemBundle": "CreditOrderProductBundleVO",
-        "OrderProductListItem": "CreditOrderProductVO"
+        "BatteryProductListItem": "ElecServiceBatteryProductListItem",
+        "OrderProductListParam": "CreditOrderProductListParam",
+        "OrderProductListItem": "CreditOrderProductListItem"
       },
-      "fns": {
-        "YX0l9jGX": {
-          "mechanical": "hedList",
-          "semantic": "getHedBatteryBundleList",
-          "locked": true
-        },
-        "58pnGWWz": {
-          "mechanical": "hedList2",
-          "semantic": "getHedBatteryProductList",
-          "locked": true
-        },
-        "V2JVA4Y2": {
-          "mechanical": "batteryProductList",
-          "semantic": "getElecServiceBatteryProductList",
-          "locked": true
-        },
-        "e24QpmL8": {
-          "mechanical": "creditHistoryCoopInfo",
-          "semantic": "getCreditHistoryCoopInfo",
-          "locked": true
-        },
-        "VXE7ApE2": {
-          "mechanical": "creditHistoryCoopInfoByCreditId",
-          "semantic": "getCreditHistoryCoopInfoByCreditId",
-          "locked": true
-        },
-        "42GQ6JXW": {
-          "mechanical": "orderProductList",
-          "semantic": "getCreditOrderProductList",
-          "locked": true
-        }
-      },
+      "fns": {},
       "fieldTypes": {},
       "source": "ai",
       "apiShapes": {
-        "YX0l9jGX": "3eebce6047d9",
-        "58pnGWWz": "fc20857f95ba",
-        "V2JVA4Y2": "f951f7836d5e",
-        "e24QpmL8": "aec406e2836d",
-        "VXE7ApE2": "b0c5db823b48",
-        "42GQ6JXW": "84a82f87c08f"
+        "YX0l9jGX": "65ba7e7d5c11",
+        "58pnGWWz": "33fa7c3c04e5",
+        "V2JVA4Y2": "17ea63e27995",
+        "e24QpmL8": "538a2a992d4e",
+        "VXE7ApE2": "548fe5c4234c",
+        "42GQ6JXW": "3dfa34d16f2c"
       }
     }
   }
