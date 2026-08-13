@@ -1,3 +1,7 @@
+ cd extension    pnpm --filter openapi-qoder-webview build   # 先确保 webview 产物在（漏了面板会空白）
+    npx vsce package --no-dependencies
+
+
 # openapi-qoder
 
 从 Torna（toena）接口文档生成高质量 TypeScript 类型 + 请求函数的工具。

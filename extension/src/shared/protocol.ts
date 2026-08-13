@@ -15,6 +15,7 @@ export interface TreeNodeMsg {
 // Webview → Extension
 export type ToExtension =
   | { type: 'saveToken'; token: string }
+  | { type: 'savePat'; token: string }
   | { type: 'loadTree'; urlOrId: string }
   | { type: 'generate'; selection: string[]; options: GenerateOptions }
   | { type: 'pickOutputDir' }
@@ -30,11 +31,10 @@ export interface GenerateOptions {
 
 // Extension → Webview
 export type ToWebview =
-  | { type: 'tokenState'; hasToken: boolean; version: string }
+  | { type: 'tokenState'; hasToken: boolean; hasPat: boolean; version?: string }
   | { type: 'treeLoaded'; tree: TreeNodeMsg[]; projectId: string }
   | { type: 'progress'; message: string }
   | { type: 'log'; message: string }
   | { type: 'done'; files: string[] }
   | { type: 'error'; message: string }
-  | { type: 'outputDir'; dir: string }
-  | { type: 'qodercliAvailable'; available: boolean };
+  | { type: 'outputDir'; dir: string };

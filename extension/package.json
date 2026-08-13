@@ -33,11 +33,6 @@
           "type": "string",
           "default": "@/utils/request",
           "description": "提供 PageResult<T> 分页类型的 import 路径（改成你项目里已有的分页类型所在模块）"
-        },
-        "openapiQoder.qodercliPath": {
-          "type": "string",
-          "default": "qodercli",
-          "description": "qodercli 可执行文件路径（AI 润色需要）"
         }
       }
     }

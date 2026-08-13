@@ -3,6 +3,7 @@ import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import type { ToExtension, ToWebview, TreeNodeMsg } from './shared/protocol';
+import type { CloudIds, CloudIdStore } from '../../src/polish/cloud.js';
 import { generateAndWrite } from './writer';
 
 let currentPanel: vscode.WebviewPanel | undefined;
@@ -65,17 +66,23 @@ async function handleMessage(
 
   switch (msg.type) {
     case 'ready': {
-      const secrets = context.secrets;
-      const token = await secrets.get('tornaToken');
-      post(panel, { type: 'tokenState', hasToken: !!token, version: 'build6' });
+      const [token, pat] = await Promise.all([
+        context.secrets.get('tornaToken'),
+        context.secrets.get('qoderPat'),
+      ]);
+      post(panel, { type: 'tokenState', hasToken: !!token, hasPat: !!pat, version: 'build6' });
       const dir = vscode.workspace.getConfiguration('openapiQoder').get<string>('outputDir') ?? 'src/api';
       post(panel, { type: 'outputDir', dir });
-      checkQodercli(panel);
       break;
     }
     case 'saveToken': {
       await context.secrets.store('tornaToken', msg.token);
-      post(panel, { type: 'tokenState', hasToken: true });
+      post(panel, { type: 'tokenState', hasToken: true, hasPat: !!(await context.secrets.get('qoderPat')) });
+      break;
+    }
+    case 'savePat': {
+      await context.secrets.store('qoderPat', msg.token);
+      post(panel, { type: 'tokenState', hasToken: !!(await context.secrets.get('tornaToken')), hasPat: true });
       break;
     }
     case 'loadTree': {
@@ -107,6 +114,16 @@ async function handleMessage(
         break;
       }
 
+      let cloud: { pat: string; store: CloudIdStore } | undefined;
+      if (msg.options.aiPolish) {
+        const pat = await context.secrets.get('qoderPat');
+        if (!pat) {
+          post(panel, { type: 'error', message: '未配置 Qoder 个人访问令牌（AI 润色需要）' });
+          break;
+        }
+        cloud = { pat, store: cloudIdStore(context) };
+      }
+
       try {
         const result = await generateAndWrite({
           selectedIds: msg.selection,
@@ -115,6 +132,7 @@ async function handleMessage(
           token: lastToken,
           baseUrl: lastBaseUrl,
           projectId: lastProjectId,
+          cloud,
           signal: generateAbort.signal,
           onProgress: (m) => post(panel, { type: 'progress', message: m }),
           onLog: (m) => { out.appendLine(m); post(panel, { type: 'log', message: m }); },
@@ -184,12 +202,14 @@ async function loadTree(urlOrId: string, panel: vscode.WebviewPanel, context: vs
   }
 }
 
-async function checkQodercli(panel: vscode.WebviewPanel) {
-  const { execFile } = await import('node:child_process');
-  const cmd = vscode.workspace.getConfiguration('openapiQoder').get<string>('qodercliPath') ?? 'qodercli';
-  execFile(cmd, ['--version'], (err) => {
-    post(panel, { type: 'qodercliAvailable', available: !err });
-  });
+// The provisioned agent/environment are account-level and hold no secret, so they
+// live in globalState — reusing them across workspaces avoids re-creating cloud
+// resources on every new project.
+function cloudIdStore(context: vscode.ExtensionContext): CloudIdStore {
+  return {
+    get: () => context.globalState.get<CloudIds>('cloudIds'),
+    set: async (ids) => { await context.globalState.update('cloudIds', ids); },
+  };
 }
 
 function getWebviewHtml(webview: vscode.Webview, distDir: string): string {

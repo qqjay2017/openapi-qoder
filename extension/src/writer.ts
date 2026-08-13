@@ -8,7 +8,7 @@ import { TornaClient } from '../../src/torna/client.js';
 import { mapLimit, commonSlug, findFolder } from '../../src/core/index.js';
 import { loadLedger, applyEntry, pendingWork, saveLedger } from '../../src/ledger/index.js';
 import { parseHeader } from '../../src/ledger/parse.js';
-import { polishFiles } from './polish';
+import { polishFiles, type PolishRequest } from './polish';
 import type { GenerateOptions, TreeNodeMsg } from './shared/protocol';
 
 export interface GenerateRequest {
@@ -18,6 +18,8 @@ export interface GenerateRequest {
   token: string;
   baseUrl: string;
   projectId: string;
+  /** Required when `options.aiPolish` is set. */
+  cloud?: PolishRequest['cloud'];
   signal?: AbortSignal;
   onProgress: (msg: string) => void;
   onLog: (msg: string) => void;
@@ -165,11 +167,13 @@ export async function generateAndWrite(req: GenerateRequest): Promise<GenerateRe
   // Stage-2: AI polish if requested.
   if (req.options.aiPolish && writtenFiles.length > 0) {
     if (req.signal?.aborted) throw new Error('已取消');
+    if (!req.cloud) throw new Error('AI 润色需要 Qoder 个人访问令牌');
     req.onProgress('启动 AI 润色...');
     const filePaths = writtenFiles.map((f) => path.join(outPath, f));
     const result = await polishFiles({
       files: filePaths,
       workspaceRoot: wsFolder.uri.fsPath,
+      cloud: req.cloud,
       signal: req.signal,
       onProgress: req.onProgress,
       onLog: req.onLog,

@@ -16,7 +16,9 @@ const progress = ref('');
 const errorMsg = ref('');
 const generatedFiles = ref<string[]>([]);
 const outputDir = ref('src/api');
-const qodercliAvailable = ref(false);
+const hasPat = ref(false);
+const patInput = ref('');
+const showPatInput = ref(false);
 const logs = ref<string[]>([]);
 const extVersion = ref('');
 
@@ -32,6 +34,13 @@ const selectedCount = computed(() => selected.value.size);
 function saveToken() {
   if (!tokenInput.value.trim()) return;
   postToExtension({ type: 'saveToken', token: tokenInput.value.trim() });
+}
+
+function savePat() {
+  if (!patInput.value.trim()) return;
+  postToExtension({ type: 'savePat', token: patInput.value.trim() });
+  patInput.value = '';
+  showPatInput.value = false;
 }
 
 function loadTree() {
@@ -98,6 +107,7 @@ onMessage((msg) => {
   switch (msg.type) {
     case 'tokenState':
       phase.value = msg.hasToken ? 'tree' : 'token';
+      hasPat.value = msg.hasPat;
       if (msg.version) extVersion.value = msg.version;
       break;
     case 'treeLoaded':
@@ -127,9 +137,6 @@ onMessage((msg) => {
       break;
     case 'outputDir':
       outputDir.value = msg.dir;
-      break;
-    case 'qodercliAvailable':
-      qodercliAvailable.value = msg.available;
       break;
   }
 });
@@ -183,11 +190,29 @@ onMessage((msg) => {
         <label><input type="checkbox" v-model="opts.requestFns" /> 接口函数</label>
         <label><input type="checkbox" v-model="opts.enums" /> 枚举</label>
         <label><input type="checkbox" v-model="opts.options" /> Options</label>
-        <label :class="{ disabled: !qodercliAvailable }">
-          <input type="checkbox" v-model="opts.aiPolish" :disabled="!qodercliAvailable" />
+        <label :class="{ disabled: !hasPat }">
+          <input type="checkbox" v-model="opts.aiPolish" :disabled="!hasPat" />
           AI 润色
-          <span v-if="!qodercliAvailable" class="hint">(需安装 qodercli)</span>
+          <span class="hint pat-toggle" @click.prevent="showPatInput = !showPatInput">
+            {{ hasPat ? '(已配置令牌，点击重设)' : '(需配置 Qoder 令牌)' }}
+          </span>
         </label>
+      </div>
+
+      <div v-if="tree.length && showPatInput" class="pat-panel">
+        <p class="hint">
+          在 https://qoder.com/account/integrations 创建个人访问令牌（pt- 开头）。
+          令牌安全存储在 VS Code SecretStorage 中，不会写入 settings.json。
+        </p>
+        <div class="url-bar">
+          <input
+            v-model="patInput"
+            type="password"
+            placeholder="粘贴 Qoder 个人访问令牌"
+            @keyup.enter="savePat"
+          />
+          <button @click="savePat" :disabled="!patInput.trim()">保存</button>
+        </div>
       </div>
 
       <div v-if="tree.length" class="action-bar">
@@ -265,6 +290,8 @@ input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
 .options-bar { display: flex; gap: 18px; flex-wrap: wrap; padding: 12px 0; border-top: 1px solid var(--vscode-widget-border, #333); }
 .options-bar label { display: flex; align-items: center; gap: 6px; font-size: 0.95em; cursor: pointer; }
 .options-bar .disabled { opacity: 0.5; }
+.pat-toggle { cursor: pointer; text-decoration: underline; }
+.pat-panel { padding: 10px 0; }
 .action-bar { display: flex; justify-content: space-between; align-items: center; padding-top: 12px; }
 .output-dir { font-size: 0.9em; opacity: 0.75; cursor: pointer; text-decoration: underline; }
 .progress-text { font-weight: 500; margin: 10px 0 6px; font-size: 1.05em; }

@@ -18,7 +18,7 @@ import {
   qodercliAuth,
   DEFAULT_ACCESS_TOKEN_ENV_VAR,
 } from '@qoder-ai/qoder-agent-sdk';
-import { buildPolishPrompt, type PolishTarget } from './prompt.js';
+import { buildPolishPrompt, chunkByApis, type PolishTarget } from './prompt.js';
 
 export interface PolishConfig {
   /** Directory holding Stage-1 output (also the tsc project root scope). */
@@ -107,26 +107,6 @@ async function runAgent(targets: PolishTarget[], cfg: PolishConfig): Promise<voi
   } finally {
     q.close();
   }
-}
-
-// `limit` counts APIs, not files: one merged folder file can hold 10 APIs, and
-// batching by file count would put 40 APIs against a maxTurns of 40-60 and run
-// out of turns mid-file — a partial rename gets the whole file rolled back.
-function chunkByApis(items: PolishTarget[], limit: number): PolishTarget[][] {
-  const out: PolishTarget[][] = [];
-  let batch: PolishTarget[] = [];
-  let count = 0;
-  for (const item of items) {
-    if (batch.length > 0 && count + item.apis.length > limit) {
-      out.push(batch);
-      batch = [];
-      count = 0;
-    }
-    batch.push(item);
-    count += item.apis.length;
-  }
-  if (batch.length > 0) out.push(batch);
-  return out;
 }
 
 // Mark a polished file as having passed Stage-2 so readers know the names were

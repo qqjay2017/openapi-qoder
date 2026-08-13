@@ -12,8 +12,8 @@ export interface PolishTarget {
   apis: { docName: string; url: string; httpMethod: string }[];
 }
 
-export function buildPolishPrompt(targets: PolishTarget[]): string {
-  const list = targets
+function apiList(targets: PolishTarget[]): string {
+  return targets
     .map((t) =>
       [
         `- ${t.file}${t.apis.length > 1 ? `  (${t.apis.length} APIs in this one file)` : ''}`,
@@ -21,14 +21,22 @@ export function buildPolishPrompt(targets: PolishTarget[]): string {
       ].join('\n'),
     )
     .join('\n');
+}
 
+export function buildPolishPrompt(targets: PolishTarget[]): string {
   return `You are polishing auto-generated TypeScript API files. Each file was
 produced deterministically from a Torna API doc and already compiles.
 
 Files to polish (edit them in place with the Edit tool):
-${list}
+${apiList(targets)}
 
-## Your ONLY allowed changes
+${POLISH_RULES}
+
+Work through the files one at a time. When done, reply with a one-line summary
+per file: the old and new primary type/function names.`;
+}
+
+export const POLISH_RULES = `## Your ONLY allowed changes
 
 1. **Semantic renaming.** Replace mechanical names with domain-meaningful ones.
    - Interfaces: \`DeptPageParam\` / \`DeptPageData\` / \`DeptPageItem\` ->
@@ -74,8 +82,73 @@ distinguished them with a numeric suffix (\`XParam\` and \`X2Param\`).
 - Do NOT restructure types, inline named interfaces, or unwrap \`PageResult<T>\`.
 - Do NOT touch \`common.ts\` or the \`import\` of \`PageResult\`.
 - Do NOT change enum VALUES (the string literals). You may improve their JSDoc.
-- Keep every declaration \`export\`ed.
+- Keep every declaration \`export\`ed.`;
 
-Work through the files one at a time. When done, reply with a one-line summary
-per file: the old and new primary type/function names.`;
+/** A polish target plus its current Stage-1 source, for the text-only cloud pass. */
+export interface CloudPolishTarget extends PolishTarget {
+  /** File basename — the key the model must echo back. */
+  name: string;
+  content: string;
+}
+
+// The cloud agent has no filesystem access, so the exchange is text-in/text-out:
+// inline every file and demand the whole file back. Partial diffs are refused
+// because a fenced block is the only thing we can safely write to disk verbatim.
+export function buildCloudPolishPrompt(targets: CloudPolishTarget[]): string {
+  const files = targets
+    .map(
+      (t) =>
+        [
+          `### FILE: ${t.name}`,
+          ...t.apis.map((a) => `<!-- ${a.httpMethod} ${a.url}  —  ${a.docName} -->`),
+          '```ts',
+          t.content,
+          '```',
+        ].join('\n'),
+    )
+    .join('\n\n');
+
+  return `You are polishing auto-generated TypeScript API files. Each file was
+produced deterministically from a Torna API doc and already compiles.
+
+${POLISH_RULES}
+
+## Output format — deviating from this discards your whole answer
+
+Reply with NOTHING but one section per file, in the order given:
+
+### FILE: <exact file name>
+\`\`\`ts
+<the complete final content of that file>
+\`\`\`
+
+- Emit the ENTIRE file, byte for byte, including the header comments. Never
+  abbreviate with \`// ...\`, \`// unchanged\`, or any other placeholder.
+- Echo the file name exactly as given. Never invent a file name.
+- If a file needs no change, still return it in full, unchanged.
+- No prose, no summary, no explanation outside the fenced blocks.
+
+## Files (${targets.length})
+
+${files}`;
+}
+
+// `limit` counts APIs, not files: one merged folder file can hold 10 APIs, and
+// batching by file count would put a huge reply against a single model turn —
+// a truncated reply loses every file in the batch.
+export function chunkByApis<T extends PolishTarget>(items: T[], limit: number): T[][] {
+  const out: T[][] = [];
+  let batch: T[] = [];
+  let count = 0;
+  for (const item of items) {
+    if (batch.length > 0 && count + item.apis.length > limit) {
+      out.push(batch);
+      batch = [];
+      count = 0;
+    }
+    batch.push(item);
+    count += item.apis.length;
+  }
+  if (batch.length > 0) out.push(batch);
+  return out;
 }
