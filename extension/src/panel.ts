@@ -162,6 +162,7 @@ async function handleMessage(
             file: r.file,
             status: r.status,
             renames: r.summary?.renames ?? [],
+            typeReuse: r.summary?.typeReuse ?? 0,
             unknownResolved: r.summary?.unknownResolved ?? 0,
             otherLines: r.summary?.otherLines ?? 0,
           })),

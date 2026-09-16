@@ -1,7 +1,7 @@
 // Stage-1 emitter tests (hermetic: pure functions, no network, no AI, no fixtures).
 //
-// Covers the naming edge cases that are silent at compile time and only surface
-// at runtime, which is exactly what the Stage-2 tsc gate cannot catch.
+// Covers naming edge cases that are silent at compile time and belong in the
+// deterministic generator rather than the Stage-2 validation gates.
 
 import { generateFile, type TornaDetail } from './codegen/emit.js';
 import type { RawParam } from './codegen/tree.js';

@@ -6,15 +6,17 @@
 // files. Kept free of `vscode` imports so it runs under plain node/tsx too.
 
 import { POLISH_RULES, type CloudPolishTarget } from './prompt.js';
-import { parseFile } from '../ledger/parse.js';
+import { summarizePolishedSource } from './validate.js';
 
 const API_BASE = 'https://api.qoder.com/api/v1/cloud';
-const RESOURCE_NAME = 'openapi-qoder-polish';
+const RESOURCE_NAME = 'openapi-qoder-polish-v2';
+const CLOUD_AGENT_VERSION = 2;
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 export interface CloudIds {
   agentId: string;
   environmentId: string;
+  version?: number;
 }
 
 /** Where the provisioned agent/environment IDs are remembered between runs. */
@@ -102,7 +104,9 @@ export async function ensureCloudIds(
   log: Log,
 ): Promise<CloudIds> {
   const cached = store.get();
-  if (cached?.agentId && cached?.environmentId) return cached;
+  if (cached?.agentId && cached?.environmentId && cached.version === CLOUD_AGENT_VERSION) {
+    return cached;
+  }
 
   let environmentId = await findByName(pat, '/environments', RESOURCE_NAME);
   if (environmentId) {
@@ -111,7 +115,7 @@ export async function ensureCloudIds(
     log('[cloud] 创建云端 environment...');
     const env = await call(pat, 'POST', '/environments', {
       name: RESOURCE_NAME,
-      description: 'Stage-2 naming polish for openapi-qoder generated files',
+      description: 'Stage-2 contract-safe TypeScript polish for openapi-qoder',
       config: { type: 'cloud' },
     });
     environmentId = env.id as string;
@@ -128,7 +132,7 @@ export async function ensureCloudIds(
     const agent = await call(pat, 'POST', '/agents', {
       name: RESOURCE_NAME,
       model,
-      description: 'Renames and comments-only polish of generated TypeScript API files',
+      description: 'Contract-safe TypeScript structure and naming polish',
       system: `You polish auto-generated TypeScript API files. You have no tools and no
 filesystem: everything you need is in the user message, and your reply is written
 to disk verbatim.
@@ -138,7 +142,7 @@ ${POLISH_RULES}`,
     agentId = agent.id as string;
   }
 
-  const ids: CloudIds = { agentId, environmentId };
+  const ids: CloudIds = { agentId, environmentId, version: CLOUD_AGENT_VERSION };
   await store.set(ids);
   log(`[cloud] 使用 ${ids.agentId} / ${ids.environmentId}`);
   return ids;
@@ -311,47 +315,67 @@ export function parsePolishReply(
 }
 
 export interface PolishSummary {
-  /** `旧名 → 新名` pairs across interfaces, type aliases and request functions. */
+  /** `旧名 → 新名` pairs inferred from endpoint identity and expanded type shape. */
   renames: { from: string; to: string }[];
+  /** New extends/Pick/Omit reuse introduced by Stage-2. */
+  typeReuse: number;
   /** How many `unknown[]` fields got a concrete element type. */
   unknownResolved: number;
-  /** Changed lines that are neither a rename nor an `unknown[]` fix — comments, mostly. */
+  /** Changed lines not already explained by another summary field. */
   otherLines: number;
 }
 
-// Stage-2 may not add, remove or reorder declarations, so pairing Stage-1 with the
-// polished file by declaration index is what turns a text diff into "these names
-// changed".
 export function summarizePolish(stage1: string, polished: string): PolishSummary {
-  const a = parseFile(stage1);
-  const b = parseFile(polished);
-
+  const before = summarizePolishedSource(stage1);
+  const after = summarizePolishedSource(polished);
   const renames: { from: string; to: string }[] = [];
-  const pair = (from: string, to: string) => {
-    if (from !== to) renames.push({ from, to });
-  };
-  a.interfaces.forEach((x, i) => pair(x.name, b.interfaces[i]?.name ?? x.name));
-  a.aliases.forEach((x, i) => pair(x.name, b.aliases[i]?.name ?? x.name));
-  a.fnNames.forEach((x, i) => pair(x, b.fnNames[i] ?? x));
 
-  const countUnknown = (s: string) => (s.match(/unknown\[\]/g) ?? []).length;
+  before.endpoints.forEach((endpoint, index) => {
+    const next = after.endpoints[index];
+    if (
+      next &&
+      endpoint.method === next.method &&
+      endpoint.url === next.url &&
+      endpoint.name !== next.name
+    ) {
+      renames.push({ from: endpoint.name, to: next.name });
+    }
+  });
+
+  const used = new Set<number>();
+  for (const oldType of before.exportedTypes) {
+    let index = after.exportedTypes.findIndex(
+      (next, i) =>
+        !used.has(i) &&
+        next.name === oldType.name &&
+        JSON.stringify(next.shape) === JSON.stringify(oldType.shape),
+    );
+    if (index < 0) {
+      index = after.exportedTypes.findIndex(
+        (next, i) => !used.has(i) && JSON.stringify(next.shape) === JSON.stringify(oldType.shape),
+      );
+    }
+    if (index < 0) continue;
+    used.add(index);
+    const next = after.exportedTypes[index]!;
+    if (oldType.name !== next.name) renames.push({ from: oldType.name, to: next.name });
+  }
+
+  const countReuse = (source: string) =>
+    (source.match(/export interface \w+(?:<[^>]+>)? extends /g) ?? []).length +
+    (source.match(/\b(?:Pick|Omit)</g) ?? []).length;
+  const typeReuse = Math.max(0, countReuse(polished) - countReuse(stage1));
+  const countUnknown = (source: string) => (source.match(/unknown\[\]/g) ?? []).length;
   const unknownResolved = Math.max(0, countUnknown(stage1) - countUnknown(polished));
 
-  // Line-level churn, ignoring the lines already explained by a rename.
-  const renamedNames = new Set(renames.map((r) => r.from));
   const beforeLines = stage1.split(/\r?\n/);
   const afterLines = polished.split(/\r?\n/);
   let otherLines = 0;
   for (let i = 0; i < Math.max(beforeLines.length, afterLines.length); i++) {
-    const before = beforeLines[i] ?? '';
-    const after = afterLines[i] ?? '';
-    if (before === after) continue;
-    if ([...renamedNames].some((n) => before.includes(n))) continue;
-    if (before.includes('unknown[]')) continue;
-    otherLines++;
+    if ((beforeLines[i] ?? '') !== (afterLines[i] ?? '')) otherLines++;
   }
 
-  return { renames, unknownResolved, otherLines };
+  return { renames, typeReuse, unknownResolved, otherLines };
 }
 
 export function formatPolishSummary(name: string, s: PolishSummary): string {
@@ -362,7 +386,8 @@ export function formatPolishSummary(name: string, s: PolishSummary): string {
       `${s.renames.length} 处重命名 (${shown}${s.renames.length > 3 ? ', ...' : ''})`,
     );
   }
+  if (s.typeReuse > 0) parts.push(`${s.typeReuse} 处类型复用`);
   if (s.unknownResolved > 0) parts.push(`${s.unknownResolved} 处 unknown[] 定型`);
-  if (s.otherLines > 0) parts.push(`${s.otherLines} 行注释/其他`);
+  if (s.otherLines > 0) parts.push(`${s.otherLines} 行结构/注释调整`);
   return `[polish] ${name}: ${parts.length > 0 ? parts.join('，') : '无实质变化'}`;
 }

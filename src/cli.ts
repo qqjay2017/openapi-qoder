@@ -19,7 +19,7 @@ import { artifactDir, repoRoot, scaffold } from './paths.js';
 import { commonSlug, findFolder, mapLimit, slugFromUrl } from './core/index.js';
 import {
   applyEntry,
-  harvestEntry,
+  harvestPolishedEntry,
   loadLedger,
   pendingWork,
   saveLedger,
@@ -128,18 +128,22 @@ async function cmdGen(client: TornaClient, id: string, force = false): Promise<v
       // A stale entry's types/fieldTypes are keyed to a structure that no longer
       // exists, so only the locked fn name survives; Stage-2 re-derives the rest.
       const replay = stale ? { ...entry!, types: {}, fieldTypes: {} } : entry;
-      const applied = replay ? applyEntry(code, replay) : code;
+      const applied = replay ? applyEntry(code, replay, repoRoot) : code;
 
       // Stage-2 output that has not been harvested yet is unrecoverable, so it
       // wins over a fresh Stage-1.5 replay unless the caller insists.
       const finalPath = join(fin, `${slug}.ts`);
       const polished =
-        !force && existsSync(finalPath) && readFileSync(finalPath, 'utf8').includes('Stage-2');
+        !force &&
+        !entry &&
+        existsSync(finalPath) &&
+        readFileSync(finalPath, 'utf8').includes('Stage-2');
       if (polished) keptPolished++;
       else writeFileSync(finalPath, applied);
 
-      if (entry && !stale) reused++;
-      if (!entry || stale || pendingWork(applied).unknownArrays > 0) needAi++;
+      const fullPolishReplayed = applied.includes('Stage-2');
+      if (fullPolishReplayed) reused++;
+      if (!fullPolishReplayed || pendingWork(applied).unknownArrays > 0) needAi++;
     } catch (err) {
       failures.push(`${api.label} [${api.docId}]: ${(err as Error).message}`);
     }
@@ -195,11 +199,14 @@ async function cmdGenFolder(client: TornaClient, docId: string, force = false): 
   const entry = loadLedger(LEDGER_FILE).apis[folder.docId];
   const stale = !!entry && entry.shape !== shape;
   const replay = stale ? { ...entry!, types: {}, fieldTypes: {} } : entry;
-  const applied = replay ? applyEntry(code, replay) : code;
+  const applied = replay ? applyEntry(code, replay, repoRoot) : code;
 
   const finalPath = join(fin, `${slug}.ts`);
   const keep =
-    !force && existsSync(finalPath) && readFileSync(finalPath, 'utf8').includes('Stage-2');
+    !force &&
+    !entry &&
+    existsSync(finalPath) &&
+    readFileSync(finalPath, 'utf8').includes('Stage-2');
   if (!keep) writeFileSync(finalPath, applied);
 
   console.log(`\nStage-1 -> generated/${folder.docId}/${slug}.ts  (${details.length} API(s))`);
@@ -237,7 +244,7 @@ function cmdHarvest(pid: string): void {
     }
 
     const meta = /^\/\/ (\S+) (\S+)/m.exec(before.split('\n')[1] ?? '');
-    const entry = harvestEntry(before, after, {
+    const entry = harvestPolishedEntry(repoRoot, before, after, {
       httpMethod: meta?.[1] ?? 'POST',
       url: meta?.[2] ?? '',
     });
@@ -245,12 +252,6 @@ function cmdHarvest(pid: string): void {
       rejected++;
       continue;
     }
-    const hasDecisions =
-      Object.keys(entry.types).length > 0 ||
-      Object.keys(entry.fieldTypes).length > 0 ||
-      Object.keys(entry.fns).length > 0;
-    if (!hasDecisions) continue;
-
     ledger.apis[docId] = { ...ledger.apis[docId], ...entry };
     added++;
   }

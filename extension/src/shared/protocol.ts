@@ -30,6 +30,7 @@ export interface PolishReportMsg {
   file: string;
   status: 'polished' | 'reverted' | 'failed';
   renames: { from: string; to: string }[];
+  typeReuse: number;
   unknownResolved: number;
   otherLines: number;
 }

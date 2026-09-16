@@ -5,12 +5,14 @@
 // type/function names and break every page that imports them. So we separate
 // DECISIONS (this ledger, committed to git) from the ARTIFACT (generated files).
 //
-//   Stage 1  mechanical names      (deterministic)
-//   Stage 1.5 apply ledger         (deterministic, no AI)
-//   Stage 2  AI fills gaps only    (cost scales with doc churn, not API count)
+//   Stage 1  mechanical types      (deterministic)
+//   Stage 1.5 replay validated output or safe legacy decisions
+//   Stage 2  AI improves names and type structure when the contract changes
 
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
+import { validatePolishedSource } from '../polish/validate.js';
 import { parseFile, type FileShape } from './parse.js';
 
 export interface LedgerFn {
@@ -19,6 +21,15 @@ export interface LedgerFn {
   semantic: string;
   /** Frozen: consumers import this name, so it survives a shape change. */
   locked?: boolean;
+}
+
+export interface PolishArtifact {
+  /** Hash of the exact Stage-1 source this artifact was produced from. */
+  baseHash: string;
+  /** Hash guarding the cached polished file against accidental edits. */
+  contentHash: string;
+  /** File name under `.openapi-qoder/polished/`. */
+  file: string;
 }
 
 export interface ApiLedgerEntry {
@@ -36,6 +47,8 @@ export interface ApiLedgerEntry {
   fns: Record<string, LedgerFn>;
   /** "MechanicalOwner.propKey" -> resolved TS type (scalar array inference) */
   fieldTypes: Record<string, string>;
+  /** Exact replay for validated type-structure optimizations. */
+  polishArtifact?: PolishArtifact;
   /** 'ai' | 'manual' — manual entries are never overwritten by the AI. */
   source: 'ai' | 'manual';
 }
@@ -60,6 +73,38 @@ export function saveLedger(file: string, ledger: Ledger): void {
   const sorted: Ledger = { version: ledger.version, apis: {} };
   for (const key of Object.keys(ledger.apis).sort()) sorted.apis[key] = ledger.apis[key]!;
   writeFileSync(file, `${JSON.stringify(sorted, null, 2)}\n`);
+}
+
+export function sourceHash(source: string): string {
+  return createHash('sha256').update(source.replace(/\r\n/g, '\n')).digest('hex').slice(0, 16);
+}
+
+function artifactDir(root: string): string {
+  return join(root, '.openapi-qoder', 'polished');
+}
+
+export function loadPolishedArtifact(root: string, entry: ApiLedgerEntry): string | undefined {
+  const artifact = entry.polishArtifact;
+  if (!artifact || basename(artifact.file) !== artifact.file) return undefined;
+  const file = join(artifactDir(root), artifact.file);
+  if (!existsSync(file)) return undefined;
+  const content = readFileSync(file, 'utf8');
+  return sourceHash(content) === artifact.contentHash ? content : undefined;
+}
+
+export function savePolishedArtifact(
+  root: string,
+  docId: string,
+  stage1: string,
+  polished: string,
+): PolishArtifact {
+  const baseHash = sourceHash(stage1);
+  const safeId = docId.replace(/[^A-Za-z0-9._-]/g, '_');
+  const file = `${safeId}-${baseHash}.ts`;
+  const dir = artifactDir(root);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, file), polished);
+  return { baseHash, contentHash: sourceHash(polished), file };
 }
 
 /**
@@ -122,8 +167,8 @@ export function harvestEntry(
     }
   }
 
-  // Two declarations renamed to the same thing cannot compile. Stage-2's tsc gate
-  // catches it once; recording it would make every later run replay the breakage.
+  // Two declarations renamed to the same thing cannot compile. Never persist a
+  // collision that would make every later run replay the breakage.
   const targets = [...Object.values(types), ...Object.values(fns).map((f) => f.semantic)];
   if (new Set(targets).size !== targets.length) return null;
   const renamed = new Set(Object.keys(types));
@@ -147,6 +192,51 @@ export function harvestEntry(
   if (a.members.length > 0) {
     entry.apiShapes = Object.fromEntries(a.members.map((m) => [m.docId, m.shape]));
   }
+  return entry;
+}
+
+export function harvestPolishedEntry(
+  root: string,
+  stage1: string,
+  polished: string,
+  meta: { url: string; httpMethod: string },
+): ApiLedgerEntry | null {
+  const validation = validatePolishedSource(stage1, polished);
+  if (!validation.ok) return null;
+
+  const a = parseFile(stage1);
+  const b = parseFile(polished);
+  if (a.docId === '-') return null;
+
+  const simple = harvestEntry(stage1, polished, meta);
+  const entry = simple ?? {
+    url: meta.url,
+    httpMethod: meta.httpMethod,
+    kind: a.members.length > 0 ? 'folder' : 'api',
+    shape: a.shape,
+    types: {},
+    fns: {},
+    fieldTypes: {},
+    source: 'ai',
+  };
+
+  if (!simple && a.fnNames.length === b.fnNames.length) {
+    const members = a.members.length > 0 ? a.members : [{ docId: a.docId, shape: a.shape }];
+    if (members.length === a.fnNames.length) {
+      for (let i = 0; i < a.fnNames.length; i++) {
+        const mechanical = a.fnNames[i]!;
+        const semantic = b.fnNames[i]!;
+        if (mechanical !== semantic) {
+          entry.fns[members[i]!.docId] = { mechanical, semantic, locked: true };
+        }
+      }
+    }
+  }
+
+  if (!simple && a.members.length > 0) {
+    entry.apiShapes = Object.fromEntries(a.members.map((member) => [member.docId, member.shape]));
+  }
+  entry.polishArtifact = savePolishedArtifact(root, a.docId, stage1, polished);
   return entry;
 }
 
@@ -178,7 +268,16 @@ function applyRenames(source: string, renames: [from: string, to: string][]): st
  * Deterministically re-apply recorded decisions to freshly generated Stage-1
  * output. No AI involved.
  */
-export function applyEntry(stage1Source: string, entry: ApiLedgerEntry): string {
+export function applyEntry(stage1Source: string, entry: ApiLedgerEntry, root?: string): string {
+  if (root && entry.polishArtifact?.baseHash === sourceHash(stage1Source)) {
+    const cached = loadPolishedArtifact(root, entry);
+    if (cached) {
+      return stage1Source.includes('\r\n')
+        ? cached.replace(/\r?\n/g, '\r\n')
+        : cached.replace(/\r\n/g, '\n');
+    }
+  }
+
   let out = stage1Source;
 
   // Field-level type overrides first: they are keyed by MECHANICAL owner names,

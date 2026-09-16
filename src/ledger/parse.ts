@@ -1,8 +1,5 @@
-// Lightweight structural reader for generated files.
-//
-// Stage-1 emits declarations in a fixed order and Stage-2 is contractually
-// forbidden from adding/removing/reordering them, so pairing a Stage-1 file
-// with its polished counterpart by declaration index is reliable.
+// Lightweight reader for generated files and legacy rename-ledger entries.
+// Structural Stage-2 results use the AST validator and artifact cache instead.
 
 export interface PropInfo {
   key: string;
@@ -62,9 +59,12 @@ export function parseFile(source: string): FileShape {
 
   let current: InterfaceInfo | null = null;
   for (const line of lines) {
-    const ifaceStart = /^export interface (\w+) \{/.exec(line);
+    const ifaceStart = /^export interface (\w+)(?: extends [^{]+)? \{/.exec(line);
     if (ifaceStart) {
-      current = { name: ifaceStart[1]!, props: [] };
+      current = {
+        name: ifaceStart[1]!,
+        props: [],
+      };
       interfaces.push(current);
       continue;
     }

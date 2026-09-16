@@ -6,22 +6,17 @@
 
 ---
 
-## 1. 设计原则：确定性优先，AI 只做判断题
+## 1. 设计原则：确定性契约 + 受约束的 AI 重构
 
-参考项目 `gen-type.ts` 之所以难用，根因不是「AI 不够聪明」，而是把本该
-**结构化、规则化** 的转换写成了「直译」。因此本方案的核心决策是：
+参考项目 `gen-type.ts` 之所以难用，根因不是「AI 不够聪明」，而是把本该确定的协议转换交给了自由生成。因此流水线明确分工：
 
-- **能用规则做对的，绝不交给 AI**（结构重建、剥壳、分页识别、命名映射的机械部分）。
-  这些错误是「静默」的——生成错了类型不会报错，直到运行期才暴露，风险高。
-- **AI 只做规则做不好的判断题**（语义命名、枚举归纳、跨文件去重、注释清洗）。
-  这些即使 AI 出错也低风险、易人工复核。
-
-所以流程是两段，但**大部分「治理冗余/分页」的工作落在 Stage 1（代码）**，
-Stage 2（AI）是锦上添花的润色层。
+- **Stage 1 固定 wire contract**：负责树重建、响应剥壳、分页识别、字段类型/可选性、枚举值、URL 和 HTTP 方法，结果可离线测试。
+- **Stage 2 优化 TypeScript 表达**：结合接口语义做命名、数组元素推断、注释整理，也可抽公共接口、使用 `extends`、`Pick`/`Omit`、别名或适度泛型消除重复。
+- **验证器守住边界**：Stage 2 输出必须通过 AST 契约等价检查和 `tsc`；属性、可选性、已知类型、枚举值、分页包装或请求运行时代码发生变化时整文件回滚。
 
 ```
-Torna JSON ──▶ Stage 1 确定性 codegen ──▶ 结构正确、已治理的 .ts ──▶ Stage 2 AI 润色 ──▶ 最终产物
-              (纯 TS，无 AI，可测试)                              (Qoder Agent SDK)
+Torna JSON ──▶ Stage 1 确定性 codegen ──▶ Stage 2 AI 类型重构 ──▶ AST 契约校验 ──▶ tsc ──▶ 最终产物
+              （定义协议事实）          （优化表达与复用）       （拒绝语义漂移）
 ```
 
 ---
@@ -114,21 +109,27 @@ export interface PageResult<T> {
 
 ---
 
-## 5. Stage 2 — AI 润色（Qoder Agent SDK）
+## 5. Stage 2 — 受约束的 AI 类型重构（Qoder Agent SDK）
 
-集成方式：**`@qoder-ai/qoder-agent-sdk` 的 `query()`**，Node 侧编排，headless 批处理。
+集成方式：**`@qoder-ai/qoder-agent-sdk` 的 `query()`**，Node 侧编排，headless 批处理；VS Code 扩展使用同一份 Prompt 通过 Cloud Agents 文本接口执行。
 
-### 5.1 AI 只负责
+### 5.1 AI 可以优化
 
-- **语义命名**：`XxxItem → OperationVehicleVO`、`Param` 字段的可读化（结合 `docName`/`description`）。
-- **枚举提炼**：从 `enumInfo` 生成 `as const` 常量 + 联合类型（带 `| string` 兼容位）。
-- **跨文件去重**：识别结构完全相同的 item 类型，合并到 shared。
-- **JSDoc 润色**：把中文描述整理为规范注释。
+- **类型复用**：识别查询/导出、提交/草稿、多校验接口中的公共字段，抽取业务语义明确的基类并通过 `extends` 复用。
+- **组合表达**：在更清晰时使用 `Pick`、`Omit`、别名或适度泛型；禁止无收益的复杂条件类型和映射类型。
+- **语义命名**：统一接口、别名、枚举和请求函数的领域命名。
+- **类型收窄与注释**：根据上下文收窄 `unknown[]`，整理中文 JSDoc。
 
-**AI 不改结构**（嵌套/字段/可选性/分页判定都由 Stage 1 定死），
-只做重命名 + 注释 + 枚举，产出必须能通过 `tsc` 校验才接受。
+规则提炼自 [typescript-advanced-types](https://github.com/wshobson/agents/tree/main/plugins/javascript-typescript/skills/typescript-advanced-types) 与 [typescript-best-practices](https://github.com/cursor/plugins/blob/main/pstack/skills/typescript-best-practices/SKILL.md)，直接进入共享 Prompt，而不是运行时加载第三方 Skill。原因是本地 SDK 使用 `settingSources: []`，云端 Agent 又没有文件工具；Prompt 内置可以保证两条链路行为一致、离线可用并避免远端内容漂移。
 
-### 5.2 SDK 接入要点（已核对）
+### 5.2 不可改变的边界
+
+- 每个接口的属性键、可选性、只读性、已知字段类型、枚举值、分页包装必须保持不变。
+- 请求 URL、HTTP 方法、函数参数传递和 request 调用等运行时代码必须保持不变。
+- 每个原始请求/响应角色都必须保留一个对应导出；允许语义重命名、改成 `extends` 或别名，但不能把两个操作级角色压成一个导出。
+- 禁止新增 `any`、类型断言、非空断言或运行时代码。
+
+### 5.3 SDK 接入要点
 
 ```ts
 import { query, accessTokenFromEnv } from '@qoder-ai/qoder-agent-sdk';
@@ -138,9 +139,9 @@ const q = query({
   options: {
     auth: accessTokenFromEnv(),          // 必须显式传，否则同步抛 AuthNotConfiguredError
     permissionMode: 'acceptEdits',
-    allowedTools: ['Read', 'Edit', 'Write'],
-    settingSources: [],                  // 服务场景不加载用户/项目环境配置
-    maxTurns: 20,                         // 防跑飞
+    allowedTools: ['Read', 'Edit'],
+    settingSources: [],                  // 规则已内置到 Prompt，不加载环境配置
+    maxTurns: 60,                         // 可通过 POLISH_MAX_TURNS 调整
   },
 });
 try {
@@ -159,9 +160,9 @@ try {
 - 需要 `QODER_PERSONAL_ACCESS_TOKEN` 环境变量。
 - 可选：用 `createSdkMcpServer` 提供 `tsc 校验` 工具，让 AI 自检类型是否编译通过后再交付。
 
-### 5.3 校验闭环
+### 5.4 校验闭环
 
-Stage 2 产物 → `tsc --noEmit` → 失败则回退到 Stage 1 机械命名版本（保证「至少正确」）。
+Stage 2 产物先由 `src/polish/validate.ts` 展开 interface 继承、别名、泛型、`Pick`/`Omit` 和枚举，按请求端点比较润色前后的有效契约与运行时调用；通过后再执行 `tsc --noEmit`。任一步失败都回退到本轮输入版本。
 
 ---
 
@@ -235,42 +236,46 @@ Stage 1 产物必须与 `mock/*-result.ts` 结构一致：
 1. **M1** Stage 1 codegen 打通，4 个 mock 用例快照通过（无 AI，可离线跑）。
 2. **M2** Torna client + 批量拉取 → 对整个 project 生成。
 3. **M3** Stage 2 Qoder SDK 润色层 + `tsc` 校验闭环。
-4. **M4** 命名账本（可重入/增量）+ CLI 平台化封装。
+4. **M4** 润色账本与产物快照（可重入/增量）+ CLI 平台化封装。
 
 ---
 
-## 12. 命名账本（M4）—— 让 AI 润色可重入
+## 12. 润色账本与快照（M4）—— 让 AI 重构可重入
 
 ### 问题
 
-AI 润色**不确定**。第二次跑会重新命名，导致：
-- 名字漂移 → 页面里 `import { getHostingVehiclePage }` 全部失效；
-- diff 噪音巨大，无法 review；
-- 每次都全量调用 AI，成本随接口总数增长。
+AI 润色具有不确定性，类型结构优化又会新增基类、调整继承和重排声明。若每次都从 Stage-1 重新开始，会造成命名与抽象漂移、重复消耗模型额度，并使旧的“按声明序号反推改名”无法完整重放。
 
-### 方案：决策与产物分离
+### 方案：轻量决策 + 已验证产物快照
 
-把 AI 的每个决策落盘到 `.openapi-qoder/naming.lock.json`（**提交进 git**），
-生成文件只是产物。
+- `.openapi-qoder/naming.lock.json` 继续记录机械名到语义名、函数名和 `unknown[]` 收窄，兼容旧账本。
+- 结构优化后的完整文件保存到 `.openapi-qoder/polished/<docId>-<baseHash>.ts`；账本只记录 Stage-1 哈希、快照内容哈希和文件名。
+- 快照写入前必须通过 AST 契约校验；读取时校验内容哈希，且只允许从固定的 `polished` 目录读取。
 
 ```jsonc
 {
   "version": 1,
   "apis": {
-    "nzDyBg12": {                     // Torna docId = 稳定身份
+    "nzDyBg12": {
       "url": "/2m/v1.0/hostingVehicle/page",
       "httpMethod": "POST",
-      "shape": "a1b2c3d4e5f6",        // 结构指纹，决定是否需要重新润色
-      "fn": "getHostingVehiclePage",
-      "locked": true,                 // 函数名冻结，消费方按名 import
-      "types": {                      // 机械名 -> 语义名
-        "HostingVehiclePageParam": "HostingVehicleQueryParam",
-        "HostingVehiclePageItem": "HostingVehicleVO"
+      "kind": "api",
+      "shape": "a1b2c3d4e5f6",
+      "types": { "HostingVehiclePageItem": "HostingVehicleVO" },
+      "fns": {
+        "nzDyBg12": {
+          "mechanical": "hostingVehiclePage",
+          "semantic": "getHostingVehiclePage",
+          "locked": true
+        }
       },
-      "fieldTypes": {                 // 标量数组元素推断
-        "HostingVehiclePageParam.operatorNames": "string[]"
+      "fieldTypes": { "HostingVehiclePageParam.operatorNames": "string[]" },
+      "polishArtifact": {
+        "baseHash": "7c8d...",
+        "contentHash": "0e91...",
+        "file": "nzDyBg12-7c8d....ts"
       },
-      "source": "ai"                  // "manual" = 人工命名，AI 永不覆盖
+      "source": "ai"
     }
   }
 }
@@ -280,26 +285,20 @@ AI 润色**不确定**。第二次跑会重新命名，导致：
 
 | 阶段 | 是否用 AI | 作用 |
 | --- | --- | --- |
-| Stage 1 | ❌ | 确定性生成，机械命名 + `shape` 指纹写入文件头 |
-| **Stage 1.5 apply** | ❌ | 按账本把机械名替换为既有决策（纯文本替换） |
-| Stage 2 polish | ✅ | **只处理账本缺失/失效的部分** |
+| Stage 1 | ❌ | 确定性生成原始协议类型与 `shape` |
+| **Stage 1.5 replay** | ❌ | Stage-1 内容哈希匹配时精确恢复已验证快照；否则仅回放安全的旧命名 |
+| Stage 2 polish | ✅ | 基于当前 Stage-1 优化类型；有旧快照时把其类型设计作为参考 |
 
-### 增量判定
+### 多次运行策略
 
-- `shape` 未变 + 账本命中 → **完全跳过 AI**，纯代码复用旧名，零漂移零成本。
-- 文档更新导致 `shape` 变化 → 沿用仍存在的机械名映射，只把新增字段/新类型交给 AI。
-- 字段被文档删除 → 账本条目成为 orphan，可告警/清理。
+- **Stage-1 内容完全一致**：直接恢复旧快照并跳过 AI，输出字节稳定。
+- **文档或生成配置变化**：旧快照不能覆盖新协议；系统提取上一版的类型声明（不携带运行时代码和长注释）作为上下文，让 AI 保留仍适用的命名和抽象，在新 Stage-1 上增量调整。
+- **未 harvest 的 Stage-2 文件**：继续保留，不被生成命令覆盖。
+- **人工条目**：`source: "manual"` 时自动 harvest 不覆盖。
 
-### 两个保障
+### harvest
 
-- **`locked: true`**：函数名一旦定名即冻结（消费方直接 import）。
-- **`source: "manual"`**：人工手调命名优先级最高，`harvest` 会跳过、AI 不覆盖。
-
-### harvest（引导账本）
-
-`harvest` 通过**逐声明配对** Stage-1 与 Stage-2 文件来反推决策：
-因 Stage-2 被硬约束禁止增删/重排声明与属性，按序号配对是可靠的。
-一旦结构不匹配（说明 AI 违约），该文件**拒绝入账**而非记录错误映射。
+`harvest` 不再要求声明数量和顺序完全相同。它先执行与在线流程相同的 AST 契约校验；合法的结构重构保存为快照，简单重命名仍同步提取为轻量决策，以便 shape 变化时安全沿用。
 
 ---
 
@@ -308,21 +307,21 @@ AI 润色**不确定**。第二次跑会重新命名，导致：
 ```bash
 qgen list                 # 列出空间/项目
 qgen pick                 # 交互式：空间 → 项目 → 生成
-qgen gen <projectId>      # 拉取 + Stage-1 + 复用账本(Stage-1.5)
-qgen harvest <projectId>  # 把 Stage-2 结果记入账本
+qgen gen <projectId>      # 拉取 + Stage-1 + 重放已验证润色结果
+qgen harvest <projectId>  # 校验并保存 Stage-2 决策与快照
 qgen status <projectId>   # 查看 in-ledger / shape 变更 / 未解析 unknown[]
 
-npx tsx src/polish-run.ts <projectId>   # Stage-2 AI 润色（产物在 generated/ 下）
-npm test                                # emitter + 账本往返自测
+npx tsx src/polish-run.ts <projectId>   # Stage-2 AI 类型重构与润色
+npm test                                # emitter + 账本 + 契约校验自测
 ```
 
-`qgen gen` 不会覆盖尚未 harvest 的 Stage-2 文件（识别 Stage-2 头注释）。
-确认已入账本后可用 `qgen gen <pid> --force` 强制重写。
+`qgen gen` 不会覆盖尚未 harvest 的 Stage-2 文件；已有账本时则按 Stage-1 哈希恢复快照，或在文档变化后生成新的待润色版本。
 
 典型工作流：
 
 ```
-qgen gen <pid>  ->  polish-run  ->  qgen harvest <pid>  ->  提交 naming.lock.json
+qgen gen <pid>  ->  polish-run  ->  qgen harvest <pid>
+# 提交 naming.lock.json 与 .openapi-qoder/polished/
 # 文档更新后再次：
-qgen gen <pid>   # 大部分接口直接复用账本，只剩少数需要 polish
+qgen gen <pid>   # 未变化文件精确重放，变化文件在下次 polish 时引用旧类型设计
 ```

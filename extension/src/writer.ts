@@ -87,6 +87,7 @@ export async function generateAndWrite(req: GenerateRequest): Promise<GenerateRe
 
   const ledger = loadLedger(ledgerPath);
   const writtenFiles: string[] = [];
+  const stage1Sources: Record<string, string> = {};
   const edit = new vscode.WorkspaceEdit();
 
   req.onProgress(`正在生成 ${groups.length} 个目录...`);
@@ -137,24 +138,24 @@ export async function generateAndWrite(req: GenerateRequest): Promise<GenerateRe
     const filePath = path.join(outPath, fileName);
     const fileUri = vscode.Uri.file(filePath);
 
-    // Do not overwrite files already polished by Stage-2.
+    // Stage-1.5: apply the exact cached polish when possible. An unrecorded
+    // Stage-2 file is preserved so a failed harvest never destroys user work.
+    const { docId: entryKey, shape } = parseHeader(code);
+    const entry = ledger.apis[entryKey];
     if (fs.existsSync(filePath)) {
       const existing = fs.readFileSync(filePath, 'utf8');
-      if (existing.includes('Stage-2')) {
-        req.onProgress(`跳过 ${fileName}（已润色，请先 harvest）`);
+      if (existing.includes('Stage-2') && !entry) {
+        req.onProgress(`跳过 ${fileName}（润色结果尚未入账）`);
         continue;
       }
     }
-
-    // Stage-1.5: apply ledger if shape matches.
-    const { docId: entryKey, shape } = parseHeader(code);
-    const entry = ledger.apis[entryKey];
     const stale = !!entry && entry.shape !== shape;
     const replay = stale ? { ...entry!, types: {}, fieldTypes: {} } : entry;
-    const applied = replay ? applyEntry(code, replay) : code;
+    const applied = replay ? applyEntry(code, replay, wsFolder.uri.fsPath) : code;
 
     edit.createFile(fileUri, { overwrite: true, ignoreIfExists: false });
     edit.replace(fileUri, new vscode.Range(0, 0, 100000, 0), applied);
+    stage1Sources[fileName] = code;
     writtenFiles.push(fileName);
   }
 
@@ -183,6 +184,7 @@ export async function generateAndWrite(req: GenerateRequest): Promise<GenerateRe
     const filePaths = writtenFiles.map((f) => path.join(outPath, f));
     const result = await polishFiles({
       files: filePaths,
+      stage1Sources,
       workspaceRoot: wsFolder.uri.fsPath,
       cloud: req.cloud,
       signal: req.signal,

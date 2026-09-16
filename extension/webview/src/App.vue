@@ -193,12 +193,13 @@ onMessage((msg) => {
             <template v-if="r.renames.length">
               {{ r.renames.length }} 处重命名：{{ r.renames.slice(0, 3).map(x => x.from + '→' + x.to).join('、') }}{{ r.renames.length > 3 ? ' …' : '' }}
             </template>
+            <template v-if="r.typeReuse">，{{ r.typeReuse }} 处类型复用</template>
             <template v-if="r.unknownResolved">，{{ r.unknownResolved }} 处 unknown[] 定型</template>
-            <template v-if="r.otherLines">，{{ r.otherLines }} 行注释/其他</template>
-            <template v-if="!r.renames.length && !r.unknownResolved && !r.otherLines">无实质变化</template>
+            <template v-if="r.otherLines">，{{ r.otherLines }} 行结构/注释调整</template>
+            <template v-if="!r.renames.length && !r.typeReuse && !r.unknownResolved && !r.otherLines">无实质变化</template>
           </span>
           <span v-else-if="r.status === 'reverted'" class="polish-detail">
-            编译失败，已回滚为 Stage-1
+            契约或编译检查失败，已回滚为 Stage-1
           </span>
           <span v-else class="polish-detail">润色未完成，保留 Stage-1</span>
         </div>
